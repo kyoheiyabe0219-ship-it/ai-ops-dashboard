@@ -103,8 +103,8 @@ export function parseCommand(input: string): ParsedCommand {
     return { type: "errors" };
   }
 
-  // ⑥ roi_report
-  if (/ROI|収益|売上|利益|儲|revenue|profit/i.test(text)) {
+  // ⑥ roi_report（確認系のみ。「上げて」「増やす」はcreate_run）
+  if (/ROI|revenue|profit/i.test(text) || (/(収益|売上|利益)/.test(text) && /(見せ|教え|確認|レポート|どう|いくら)/.test(text))) {
     return { type: "roi_report" };
   }
 

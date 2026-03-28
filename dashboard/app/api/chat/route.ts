@@ -4,6 +4,7 @@ import { checkRateLimit, rateLimitResponse, apiResponse, apiError, handleOptions
 import { parseCommand, generateResponse } from "@/lib/command-parser";
 import { runIteration, executeApprovedRun } from "@/lib/thinking-engine";
 import { createAndDeploy } from "@/lib/leverage-engine";
+import { parseInstruction } from "@/lib/instruction-parser";
 
 export async function OPTIONS() { return handleOptions(); }
 
@@ -47,10 +48,26 @@ export async function POST(req: NextRequest) {
       // create_run: CEOに計画を立案させる
       // ============================================================
       case "create_run": {
+        // 構造化指示解析
+        const instruction = parseInstruction(command.goal);
+        const expectedValue = instruction.goalValue || command.expectedValue || 0;
+
+        // command保存
+        await supabase.from("commands").insert({
+          raw_input: userMessage,
+          strategy: instruction.strategy,
+          constraints: instruction.constraints,
+          goal: instruction.goal,
+          goal_value: instruction.goalValue,
+        });
+
+        actions.push({ api: "instruction.parse", method: "POST", count: 1, status: "success",
+          detail: `S:${instruction.strategy || "auto"} C:[${instruction.constraints.join(",")}] G:${instruction.goal || "none"}` });
+
         const { data: newRun, error } = await supabase.from("agent_runs").insert({
           title: command.title,
           goal: command.goal,
-          expected_value: command.expectedValue || 0,
+          expected_value: expectedValue,
           estimated_cost: 1,
           role: "ceo",
           status: "thinking",

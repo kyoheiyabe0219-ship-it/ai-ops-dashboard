@@ -10,6 +10,7 @@ import { buildMemoryPrompt, learnFromRun, saveDecision, calculateIntegratedScore
 import { selfEvaluate, proposeAlgorithmUpdate } from "./meta-engine";
 import { calculateGoalScore, proposeGoalUpdate } from "./goal-engine";
 import { calculateBusinessScore } from "./revenue-engine";
+import { parseInstruction, instructionToPrompt } from "./instruction-parser";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -163,13 +164,18 @@ async function callChatGPT(prompt: string): Promise<string> {
 // プロンプト生成
 // ============================================================
 
-function buildProposalPrompt(goal: string, memoryContext: string, prevIteration?: Iteration): string {
-  let prompt = `あなたはAI組織のCEO（カーネル）です。過去の学習データを参照し、最適な計画を立案してください。\n\n`;
+function buildProposalPrompt(goal: string, memoryContext: string, instructionContext: string, prevIteration?: Iteration): string {
+  let prompt = `あなたはAI組織のCEO（カーネル）です。過去の学習データと構造化指示を参照し、最適な計画を立案してください。\n\n`;
 
-  // 記憶注入（核心）
+  // 構造化指示（Strategy / Constraint / Goal）
+  if (instructionContext) {
+    prompt += `=== ユーザー指示（構造化済み） ===\n${instructionContext}\n`;
+  }
+
+  // 記憶注入
   prompt += memoryContext;
 
-  prompt += `\n目標: ${goal}\n\n`;
+  prompt += `\n元の入力: ${goal}\n\n`;
 
   if (prevIteration) {
     prompt += `前回の提案:\n${prevIteration.proposal}\n\n`;
@@ -276,10 +282,14 @@ export async function runIteration(
     }
   }
 
+  // 構造化指示解析
+  const instruction = parseInstruction(run.goal);
+  const instructionContext = instructionToPrompt(instruction);
+
   // 記憶参照（AI OS循環の核心）
   const memoryContext = await buildMemoryPrompt(supabase);
 
-  const proposal = await callClaude(buildProposalPrompt(run.goal, memoryContext, prevIteration));
+  const proposal = await callClaude(buildProposalPrompt(run.goal, memoryContext, instructionContext, prevIteration));
   const evalRaw = await callChatGPT(buildEvalPrompt(run.goal, proposal));
 
   let aiScore = 0;

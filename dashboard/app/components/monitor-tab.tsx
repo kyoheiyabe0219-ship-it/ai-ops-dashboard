@@ -93,6 +93,7 @@ export default function MonitorTab({
   const [runDetail, setRunDetail] = useState<{ iterations: ThinkingIteration[] } | null>(null);
   const [knowledge, setKnowledge] = useState<KnowledgeMemory[]>([]);
   const [decisions, setDecisions] = useState<DecisionMemory[]>([]);
+  const [commands, setCommands] = useState<{ strategy: string | null; constraints: string[]; goal: string | null; raw_input: string; created_at: string }[]>([]);
   const [algorithm, setAlgorithm] = useState<CeoAlgorithm | null>(null);
   const [metaLogs, setMetaLogs] = useState<MetaLog[]>([]);
   const [algoProposal, setAlgoProposal] = useState<{ shouldUpdate: boolean; reason: string; proposed: Partial<CeoAlgorithm> | null } | null>(null);
@@ -109,11 +110,13 @@ export default function MonitorTab({
 
   // メモリ読み込み + 自動リフレッシュ（10秒ごと）
   const loadMemory = useCallback(async () => {
-    const [kRes, algoRes, goalRes] = await Promise.all([
+    const [kRes, algoRes, goalRes, cmdRes] = await Promise.all([
       fetch("/api/memory?type=all&limit=10").then(r => r.json()).catch(() => ({ knowledge: [], decisions: [] })),
       fetch("/api/algorithm").then(r => r.json()).catch(() => null),
       fetch("/api/goal").then(r => r.json()).catch(() => null),
+      fetch("/api/commands").then(r => r.json()).catch(() => []),
     ]);
+    if (Array.isArray(cmdRes)) setCommands(cmdRes);
     if (kRes.knowledge) setKnowledge(kRes.knowledge);
     if (kRes.decisions) setDecisions(kRes.decisions);
     if (algoRes) {
@@ -157,6 +160,24 @@ export default function MonitorTab({
           🔄 {activeRuns.length} Run
         </span>
       </div>
+
+      {/* 直近の構造化指示 */}
+      {commands.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 mb-2">📝 指示解釈</p>
+          {commands.slice(0, 3).map((cmd, i) => (
+            <div key={i} className="bg-gray-900 rounded-lg px-3 py-2 border border-gray-800 mb-1.5 text-[10px]">
+              <p className="text-gray-400 mb-1">「{cmd.raw_input.substring(0, 40)}」</p>
+              <div className="flex flex-wrap gap-2">
+                {cmd.strategy && <span className="bg-blue-900/50 text-blue-300 px-1.5 py-0.5 rounded">戦略: {cmd.strategy}</span>}
+                {(cmd.constraints || []).map((c, j) => <span key={j} className="bg-red-900/50 text-red-300 px-1.5 py-0.5 rounded">制約: {c}</span>)}
+                {cmd.goal && <span className="bg-green-900/50 text-green-300 px-1.5 py-0.5 rounded">目標: {cmd.goal}</span>}
+                {!cmd.strategy && (cmd.constraints || []).length === 0 && !cmd.goal && <span className="text-gray-600">自由判断</span>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
       {/* 組織ツリー */}
       <div>
