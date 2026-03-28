@@ -78,3 +78,45 @@ export type ChatMessage = {
   meta: Record<string, unknown>;
   created_at: string;
 };
+
+export type AgentRun = {
+  id: string;
+  title: string;
+  goal: string;
+  status: "thinking" | "awaiting_approval" | "approved" | "executing" | "done" | "rejected" | "failed";
+  current_iteration: number;
+  max_iterations: number;
+  best_score: number;
+  final_plan: Record<string, unknown>;
+  parent_run_id: string | null;
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+};
+
+export type ThinkingIteration = {
+  id: string;
+  run_id: string;
+  iteration: number;
+  proposal: string;
+  proposal_model: string;
+  evaluation: string | null;
+  score: number | null;
+  eval_model: string;
+  improvements: string | null;
+  duration_ms: number;
+  created_at: string;
+};
+
+export type ApprovalRequest = {
+  id: string;
+  run_id: string;
+  type: "plan_approval" | "sub_agent_creation" | "execution_approval";
+  title: string;
+  description: string;
+  plan: Record<string, unknown>;
+  status: "pending" | "approved" | "rejected";
+  rejection_reason: string | null;
+  responded_at: string | null;
+  created_at: string;
+};

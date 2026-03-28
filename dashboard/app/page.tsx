@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, FormEvent, useCallback } from "react";
-import { getSupabase, Agent, Task, MonetizationLog, Alert, DecisionLog, ChatMessage } from "@/lib/supabase";
+import { getSupabase, Agent, Task, MonetizationLog, Alert, DecisionLog, ChatMessage, AgentRun, ThinkingIteration, ApprovalRequest } from "@/lib/supabase";
 
 // ============================================================
 // 定数
@@ -321,7 +321,7 @@ function TaskForm({ onCreated }: { onCreated: () => void }) {
 // 下部ナビ
 // ============================================================
 
-type Section = "dashboard" | "tasks" | "agents" | "revenue" | "alerts" | "analytics" | "decisions" | "chat";
+type Section = "dashboard" | "tasks" | "agents" | "revenue" | "alerts" | "analytics" | "decisions" | "chat" | "runs";
 
 function BottomNav({ active, onChange, unreadAlerts }: {
   active: Section; onChange: (s: Section) => void; unreadAlerts: number;
@@ -329,6 +329,7 @@ function BottomNav({ active, onChange, unreadAlerts }: {
   const items: { key: Section; icon: string; label: string; badge?: number }[] = [
     { key: "dashboard", icon: "📊", label: "概要" },
     { key: "chat", icon: "💬", label: "Chat" },
+    { key: "runs", icon: "🔄", label: "Runs" },
     { key: "agents", icon: "🤖", label: "Agent" },
     { key: "tasks", icon: "📌", label: "タスク" },
     { key: "alerts", icon: "🔔", label: "通知", badge: unreadAlerts },
@@ -351,6 +352,224 @@ function BottomNav({ active, onChange, unreadAlerts }: {
         ))}
       </div>
     </nav>
+  );
+}
+
+// ============================================================
+// Runsセクション（独立コンポーネント）
+// ============================================================
+
+const RUN_STATUS_CFG: Record<string, { icon: string; color: string; bg: string; label: string }> = {
+  thinking:           { icon: "🔄", color: "text-purple-400", bg: "bg-purple-950",  label: "思考中" },
+  awaiting_approval:  { icon: "⏳", color: "text-yellow-400", bg: "bg-yellow-950",  label: "承認待ち" },
+  approved:           { icon: "✅", color: "text-green-400",  bg: "bg-green-950",   label: "承認済み" },
+  executing:          { icon: "⚡", color: "text-blue-400",   bg: "bg-blue-950",    label: "実行中" },
+  done:               { icon: "🔵", color: "text-blue-400",   bg: "bg-blue-950",    label: "完了" },
+  rejected:           { icon: "❌", color: "text-red-400",    bg: "bg-red-950",     label: "却下" },
+  failed:             { icon: "🔴", color: "text-red-400",    bg: "bg-red-950",     label: "失敗" },
+};
+
+function RunsSection({ runs, approvals, dispatcherUrl, onUpdate }: {
+  runs: AgentRun[];
+  approvals: ApprovalRequest[];
+  dispatcherUrl: string;
+  onUpdate: () => void;
+}) {
+  const [newTitle, setNewTitle] = useState("");
+  const [newGoal, setNewGoal] = useState("");
+  const [creating, setCreating] = useState(false);
+  const [expandedRun, setExpandedRun] = useState<string | null>(null);
+  const [runDetail, setRunDetail] = useState<{ iterations: ThinkingIteration[]; tasks: Task[] } | null>(null);
+  const [iterating, setIterating] = useState<string | null>(null);
+
+  async function createRun(e: FormEvent) {
+    e.preventDefault();
+    if (!newTitle.trim() || !newGoal.trim()) return;
+    setCreating(true);
+    try {
+      await fetch(`${dispatcherUrl}/runs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ title: newTitle.trim(), goal: newGoal.trim() }),
+      });
+      setNewTitle(""); setNewGoal("");
+      onUpdate();
+    } finally { setCreating(false); }
+  }
+
+  async function loadDetail(runId: string) {
+    if (expandedRun === runId) { setExpandedRun(null); return; }
+    setExpandedRun(runId);
+    const res = await fetch(`${dispatcherUrl}/runs/${runId}`);
+    const data = await res.json();
+    setRunDetail({ iterations: data.iterations || [], tasks: data.tasks || [] });
+  }
+
+  async function iterate(runId: string) {
+    setIterating(runId);
+    try {
+      await fetch(`${dispatcherUrl}/runs/${runId}/iterate`, { method: "POST" });
+      onUpdate();
+      if (expandedRun === runId) loadDetail(runId);
+    } finally { setIterating(null); }
+  }
+
+  async function respondApproval(approvalId: string, action: "approved" | "rejected", reason?: string) {
+    await fetch(`${dispatcherUrl}/approvals/${approvalId}/respond`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action, reason }),
+    });
+    onUpdate();
+  }
+
+  async function executeRun(runId: string) {
+    await fetch(`${dispatcherUrl}/runs/${runId}/execute`, { method: "POST" });
+    onUpdate();
+  }
+
+  const pendingApprovals = approvals.filter(a => a.status === "pending");
+
+  return (
+    <div className="space-y-4">
+      {/* 承認待ちバナー */}
+      {pendingApprovals.length > 0 && (
+        <div className="bg-yellow-950/50 border border-yellow-800 rounded-xl p-4 space-y-3">
+          <p className="text-sm font-bold text-yellow-400">⏳ {pendingApprovals.length}件の承認待ち</p>
+          {pendingApprovals.map(a => (
+            <div key={a.id} className="bg-gray-900 rounded-lg p-3 border border-gray-800">
+              <p className="text-sm font-medium mb-1">{a.title}</p>
+              <p className="text-xs text-gray-500 mb-2">{a.description}</p>
+              {a.plan && (a.plan as { summary?: string }).summary && (
+                <p className="text-xs text-gray-400 mb-2">計画: {(a.plan as { summary: string }).summary}</p>
+              )}
+              <div className="flex gap-2">
+                <button onClick={() => respondApproval(a.id, "approved")}
+                  className="bg-green-800 hover:bg-green-700 text-green-200 text-xs px-3 py-1.5 rounded-lg transition">✅ 承認</button>
+                <button onClick={() => respondApproval(a.id, "rejected", "再検討が必要")}
+                  className="bg-red-900 hover:bg-red-800 text-red-300 text-xs px-3 py-1.5 rounded-lg transition">❌ 却下</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* 新規Run作成 */}
+      <form onSubmit={createRun} className="space-y-2">
+        <input type="text" value={newTitle} onChange={e => setNewTitle(e.target.value)} placeholder="タイトル（例: Q2ブログ戦略）"
+          className="w-full bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-600" />
+        <div className="flex gap-2">
+          <input type="text" value={newGoal} onChange={e => setNewGoal(e.target.value)} placeholder="目標（例: 月間PV10万達成する戦略を立案）"
+            className="flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded-xl px-3 py-2.5 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-600" />
+          <button type="submit" disabled={creating || !newTitle.trim() || !newGoal.trim()}
+            className="bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-4 py-2.5 rounded-xl text-sm font-medium transition shrink-0">
+            {creating ? "..." : "🔄 開始"}
+          </button>
+        </div>
+      </form>
+
+      {/* Run一覧 */}
+      <div className="space-y-2">
+        {runs.length === 0 && <p className="text-gray-600 text-center py-8 text-sm">Runなし。上から作成してください。</p>}
+        {runs.map(run => {
+          const cfg = RUN_STATUS_CFG[run.status] || RUN_STATUS_CFG.thinking;
+          const isExpanded = expandedRun === run.id;
+          return (
+            <div key={run.id} className={`rounded-xl border ${isExpanded ? "border-purple-800" : "border-gray-800"} bg-gray-900 overflow-hidden`}>
+              {/* ヘッダー */}
+              <button onClick={() => loadDetail(run.id)} className="w-full text-left p-4">
+                <div className="flex items-center gap-2 mb-1">
+                  <span>{cfg.icon}</span>
+                  <span className="text-sm font-semibold flex-1 truncate">{run.title}</span>
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.color}`}>{cfg.label}</span>
+                </div>
+                <p className="text-xs text-gray-500 truncate">{run.goal}</p>
+                <div className="flex gap-3 mt-2 text-[10px] text-gray-600">
+                  <span>ループ: {run.current_iteration}/{run.max_iterations}</span>
+                  <span>最高スコア: {run.best_score}点</span>
+                  <span>{new Date(run.created_at).toLocaleDateString("ja-JP")}</span>
+                </div>
+                {/* スコアバー */}
+                <div className="w-full bg-gray-800 rounded-full h-1.5 mt-2">
+                  <div className="h-1.5 rounded-full bg-purple-500 transition-all duration-500" style={{ width: `${run.best_score}%` }} />
+                </div>
+              </button>
+
+              {/* 展開: 詳細 */}
+              {isExpanded && runDetail && (
+                <div className="border-t border-gray-800 p-4 space-y-3">
+                  {/* アクションボタン */}
+                  <div className="flex gap-2">
+                    {run.status === "thinking" && (
+                      <button onClick={() => iterate(run.id)} disabled={iterating === run.id}
+                        className="bg-purple-800 hover:bg-purple-700 disabled:bg-gray-700 text-purple-200 text-xs px-3 py-1.5 rounded-lg transition">
+                        {iterating === run.id ? "思考中..." : "🔄 次のイテレーション"}
+                      </button>
+                    )}
+                    {run.status === "approved" && (
+                      <button onClick={() => executeRun(run.id)}
+                        className="bg-blue-800 hover:bg-blue-700 text-blue-200 text-xs px-3 py-1.5 rounded-lg transition">
+                        ⚡ 実行（Task生成）
+                      </button>
+                    )}
+                  </div>
+
+                  {/* イテレーション履歴 */}
+                  <div>
+                    <p className="text-xs text-gray-500 mb-2">思考ログ ({runDetail.iterations.length}回)</p>
+                    <div className="space-y-2">
+                      {runDetail.iterations.map(it => (
+                        <div key={it.id} className="bg-gray-800 rounded-lg p-3 text-xs">
+                          <div className="flex items-center gap-2 mb-1">
+                            <span className="text-gray-500">#{it.iteration}</span>
+                            <span className={`font-bold ${(it.score || 0) >= 80 ? "text-green-400" : (it.score || 0) >= 50 ? "text-yellow-400" : "text-red-400"}`}>
+                              {it.score ?? "?"}点
+                            </span>
+                            <span className="text-gray-700">{it.proposal_model} → {it.eval_model}</span>
+                            <span className="text-gray-700">{it.duration_ms}ms</span>
+                          </div>
+                          <details className="mt-1">
+                            <summary className="text-gray-600 cursor-pointer hover:text-gray-400">提案を表示</summary>
+                            <pre className="mt-1 text-gray-400 whitespace-pre-wrap text-[10px] max-h-40 overflow-y-auto">{it.proposal}</pre>
+                          </details>
+                          {it.improvements && (
+                            <p className="text-yellow-600 mt-1">改善点: {it.improvements}</p>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* 生成されたタスク */}
+                  {runDetail.tasks.length > 0 && (
+                    <div>
+                      <p className="text-xs text-gray-500 mb-2">生成タスク ({runDetail.tasks.length}件)</p>
+                      {runDetail.tasks.map(t => (
+                        <div key={t.id} className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2 text-xs mb-1">
+                          <span>{t.status === "done" ? "✅" : t.status === "running" ? "⚡" : "⏳"}</span>
+                          <span className="flex-1 truncate">{t.content}</span>
+                          <span className="text-gray-600">{t.status}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* 最終計画 */}
+                  {run.final_plan && Object.keys(run.final_plan).length > 0 && (
+                    <details>
+                      <summary className="text-xs text-gray-600 cursor-pointer hover:text-gray-400">最終計画JSON</summary>
+                      <pre className="mt-1 text-[10px] text-gray-500 bg-gray-800 rounded p-2 overflow-x-auto max-h-40">
+                        {JSON.stringify(run.final_plan, null, 2)}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -588,6 +807,8 @@ export default function Dashboard() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [decisions, setDecisions] = useState<DecisionLog[]>([]);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [runs, setRuns] = useState<AgentRun[]>([]);
+  const [approvals, setApprovals] = useState<ApprovalRequest[]>([]);
   const [section, setSection] = useState<Section>("dashboard");
   const [taskTab, setTaskTab] = useState<"all" | "pending" | "running" | "done">("all");
   const [sortBy, setSortBy] = useState<"created" | "roi">("created");
@@ -613,6 +834,11 @@ export default function Dashboard() {
     supabase.from("chat_messages").select("*").order("created_at", { ascending: true }).limit(100).then(({ data }) => { if (data) setChatMessages(data as ChatMessage[]); });
   }, []);
 
+  const loadRuns = useCallback(() => {
+    supabase.from("agent_runs").select("*").order("created_at", { ascending: false }).limit(50).then(({ data }) => { if (data) setRuns(data as AgentRun[]); });
+    supabase.from("approval_requests").select("*").eq("status", "pending").order("created_at", { ascending: false }).then(({ data }) => { if (data) setApprovals(data as ApprovalRequest[]); });
+  }, []);
+
   async function markRead(id: string) {
     await fetch(`${DISPATCHER_URL}/alerts/${id}/read`, { method: "PATCH" });
     setAlerts((prev) => prev.map((a) => a.id === id ? { ...a, is_read: true } : a));
@@ -625,7 +851,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     supabase.from("agents").select("*").order("updated_at", { ascending: false }).then(({ data }) => { if (data) setAgents(data as Agent[]); });
-    loadTasks(); loadLogs(); loadAlerts(); loadDecisions(); loadChat();
+    loadTasks(); loadLogs(); loadAlerts(); loadDecisions(); loadChat(); loadRuns();
 
     const agentCh = supabase.channel("agents-rt").on("postgres_changes", { event: "*", schema: "public", table: "agents" }, (p) => {
       setAgents((prev) => {
@@ -663,8 +889,11 @@ export default function Dashboard() {
       setChatMessages((prev) => [...prev, p.new as ChatMessage]);
     }).subscribe();
 
-    return () => { supabase.removeChannel(agentCh); supabase.removeChannel(taskCh); supabase.removeChannel(logCh); supabase.removeChannel(alertCh); supabase.removeChannel(decisionCh); supabase.removeChannel(chatCh); };
-  }, [loadTasks, loadLogs, loadAlerts, loadDecisions, loadChat]);
+    const runsCh = supabase.channel("runs-rt").on("postgres_changes", { event: "*", schema: "public", table: "agent_runs" }, () => { loadRuns(); }).subscribe();
+    const approvalsCh = supabase.channel("approvals-rt").on("postgres_changes", { event: "*", schema: "public", table: "approval_requests" }, () => { loadRuns(); }).subscribe();
+
+    return () => { [agentCh, taskCh, logCh, alertCh, decisionCh, chatCh, runsCh, approvalsCh].forEach(ch => supabase.removeChannel(ch)); };
+  }, [loadTasks, loadLogs, loadAlerts, loadDecisions, loadChat, loadRuns]);
 
   // 集計
   const runningAgents = agents.filter((a) => a.status === "running").length;
@@ -703,6 +932,7 @@ export default function Dashboard() {
   const navItems: { key: Section; icon: string; label: string }[] = [
     { key: "dashboard", icon: "📊", label: "概要" },
     { key: "chat", icon: "💬", label: "Chat" },
+    { key: "runs", icon: "🔄", label: "Runs" },
     { key: "agents", icon: "🤖", label: "エージェント" },
     { key: "tasks", icon: "📌", label: "タスク" },
     { key: "decisions", icon: "🧠", label: "AI判断" },
@@ -1167,11 +1397,12 @@ export default function Dashboard() {
   const sections: Record<Section, React.ReactNode> = {
     dashboard: dashboardSection, agents: agentsSection, tasks: tasksSection,
     chat: <ChatSection messages={chatMessages} setMessages={setChatMessages} dispatcherUrl={DISPATCHER_URL} onTaskCreated={loadTasks} />,
+    runs: <RunsSection runs={runs} approvals={approvals} dispatcherUrl={DISPATCHER_URL} onUpdate={() => { loadRuns(); loadTasks(); }} />,
     decisions: decisionsSection, alerts: alertsSection, analytics: analyticsSection, revenue: revenueSection,
   };
   const sectionLabels: Record<Section, string> = {
     dashboard: "概要", agents: "エージェント", tasks: "タスク",
-    chat: "Chat", decisions: "AI判断", alerts: "アラート", analytics: "分析", revenue: "収益",
+    chat: "Chat", runs: "Runs", decisions: "AI判断", alerts: "アラート", analytics: "分析", revenue: "収益",
   };
 
   return (
