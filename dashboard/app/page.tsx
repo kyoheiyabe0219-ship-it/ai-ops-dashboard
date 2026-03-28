@@ -514,9 +514,10 @@ function RunsSection({ runs, approvals, dispatcherUrl, onUpdate }: {
                 <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[10px] text-gray-600">
                   <span>ループ: {run.current_iteration}/{run.max_iterations}</span>
                   <span>スコア: {run.best_score}/{run.dynamic_target_score || "?"}点</span>
-                  {run.estimated_roi > 0 && <span className="text-purple-400">ROI: {run.estimated_roi.toFixed(1)}x</span>}
+                  {run.estimated_roi > 0 && <span className="text-purple-400">ROI {run.estimated_roi.toFixed(1)}x</span>}
+                  {run.success_rate > 0 && <span className="text-blue-400">成功率 {(run.success_rate * 100).toFixed(0)}%</span>}
+                  {run.effective_score > 0 && <span className="text-emerald-400">実効 {run.effective_score.toFixed(1)}</span>}
                   <span className="text-gray-700">{run.role || "normal"}</span>
-                  <span>{new Date(run.created_at).toLocaleDateString("ja-JP")}</span>
                 </div>
                 {/* スコアバー */}
                 <div className="w-full bg-gray-800 rounded-full h-1.5 mt-2">
@@ -556,7 +557,8 @@ function RunsSection({ runs, approvals, dispatcherUrl, onUpdate }: {
                             </span>
                             <span className="text-gray-600">/ {it.dynamic_target_score}点</span>
                             {it.reached_target && <span className="text-green-500">✓</span>}
-                            {it.estimated_roi > 0 && <span className="text-purple-500">ROI {it.estimated_roi.toFixed(1)}x</span>}
+                            {it.effective_score > 0 && <span className="text-emerald-500">実効{it.effective_score.toFixed(1)}</span>}
+                            {it.success_rate > 0 && <span className="text-blue-500">{(it.success_rate * 100).toFixed(0)}%</span>}
                             <span className="text-gray-700">{it.duration_ms}ms</span>
                           </div>
                           <details className="mt-1">

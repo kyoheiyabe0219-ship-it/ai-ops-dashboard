@@ -16,7 +16,8 @@ type Iteration = {
 };
 
 // ============================================================
-// 動的スコア計算
+// 現実最適化スコア計算
+// effectiveScore = (ROI × successRate) / costWeight
 // ============================================================
 
 const BASE_SCORE_MAP: Record<string, number> = {
@@ -28,15 +29,50 @@ const BASE_SCORE_MAP: Record<string, number> = {
 const SCORE_FLOOR = 60;
 const SCORE_CEILING = 95;
 
-export function calculateTargetScore(role: string, estimatedRoi: number): number {
+export type ScoreContext = {
+  estimatedRoi: number;
+  successRate: number;
+  costWeight: number;
+  effectiveScore: number;
+  targetScore: number;
+};
+
+/**
+ * 過去タスクの成功率を算出
+ * 同一Run内タスク or 全タスクのdone率
+ */
+export async function calculateSuccessRate(supabase: SupabaseClient): Promise<number> {
+  const { data } = await supabase.from("tasks").select("status").limit(200);
+  if (!data || data.length < 3) return 0.5; // 履歴不足時のデフォルト
+
+  const done = data.filter((t: { status: string }) => t.status === "done").length;
+  return done / data.length;
+}
+
+/**
+ * 統合スコア計算
+ * effectiveScore = (ROI × successRate) / costWeight
+ * → 目標スコアに反映
+ */
+export function calculateTargetScore(
+  role: string,
+  estimatedRoi: number,
+  successRate: number = 0.5,
+  estimatedCost: number = 1,
+  timeCost: number = 1,
+): ScoreContext {
   const base = BASE_SCORE_MAP[role] || BASE_SCORE_MAP.normal;
+  const costWeight = Math.max(estimatedCost + timeCost, 1) / 1000; // 千円単位に正規化
+  const effectiveScore = (estimatedRoi * successRate) / Math.max(costWeight, 0.1);
 
   let bonus = 0;
-  if (estimatedRoi >= 10) bonus = 10;
-  else if (estimatedRoi >= 5) bonus = 5;
-  else if (estimatedRoi <= 1 && estimatedRoi > 0) bonus = -5;
+  if (effectiveScore >= 10) bonus = 10;
+  else if (effectiveScore >= 5) bonus = 5;
+  else if (effectiveScore <= 1) bonus = -10;
 
-  return Math.max(SCORE_FLOOR, Math.min(base + bonus, SCORE_CEILING));
+  const targetScore = Math.max(SCORE_FLOOR, Math.min(base + bonus, SCORE_CEILING));
+
+  return { estimatedRoi, successRate, costWeight, effectiveScore, targetScore };
 }
 
 // ============================================================
@@ -152,13 +188,19 @@ ${proposal}
 // 1イテレーション実行
 // ============================================================
 
+export type IterationResult = {
+  done: boolean;
+  score: number;
+  iteration: number;
+  scoring: ScoreContext;
+};
+
 export async function runIteration(
   supabase: SupabaseClient,
   runId: string
-): Promise<{ done: boolean; score: number; iteration: number; targetScore: number; estimatedRoi: number }> {
+): Promise<IterationResult> {
   const start = Date.now();
 
-  // Run取得
   const { data: run, error: runErr } = await supabase
     .from("agent_runs")
     .select("*")
@@ -168,26 +210,39 @@ export async function runIteration(
   if (runErr || !run) throw new Error(`Run not found: ${runId}`);
   if (run.status !== "thinking") throw new Error(`Run is not in thinking state: ${run.status}`);
 
-  // 動的スコア計算
+  // 成功率算出（履歴ベース）
+  const successRate = run.success_rate > 0 ? run.success_rate : await calculateSuccessRate(supabase);
+
+  // 統合スコア計算
   const estimatedRoi = run.estimated_roi || (run.expected_value || 0) / Math.max(run.estimated_cost || 1, 1);
-  const targetScore = calculateTargetScore(run.role || "normal", estimatedRoi);
+  const scoring = calculateTargetScore(
+    run.role || "normal",
+    estimatedRoi,
+    successRate,
+    run.estimated_cost || 1,
+    run.time_cost || 1,
+  );
+
+  // success_rate を Run に保存（初回のみ）
+  if (run.success_rate === 0.5 || !run.success_rate) {
+    await supabase.from("agent_runs").update({ success_rate: successRate, effective_score: scoring.effectiveScore }).eq("id", runId);
+  }
 
   if (run.current_iteration >= run.max_iterations) {
-    await supabase.from("agent_runs").update({ status: "awaiting_approval", dynamic_target_score: targetScore }).eq("id", runId);
+    await supabase.from("agent_runs").update({ status: "awaiting_approval", dynamic_target_score: scoring.targetScore }).eq("id", runId);
 
     await supabase.from("approval_requests").insert({
       run_id: runId, type: "plan_approval",
       title: `計画承認: ${run.title}（最大ループ到達）`,
-      description: `${run.max_iterations}回到達。ベストスコア${run.best_score}点（目標${targetScore}点）`,
+      description: `${run.max_iterations}回到達。ベスト${run.best_score}点（目標${scoring.targetScore}点, 実効${scoring.effectiveScore.toFixed(1)}）`,
       plan: run.final_plan,
     });
 
-    return { done: true, score: run.best_score, iteration: run.current_iteration, targetScore, estimatedRoi };
+    return { done: true, score: run.best_score, iteration: run.current_iteration, scoring };
   }
 
   const nextIteration = run.current_iteration + 1;
 
-  // 前回のイテレーション取得
   let prevIteration: Iteration | undefined;
   if (run.current_iteration > 0) {
     const { data: prev } = await supabase
@@ -201,10 +256,7 @@ export async function runIteration(
     }
   }
 
-  // Step 1: Claude で提案生成
   const proposal = await callClaude(buildProposalPrompt(run.goal, prevIteration));
-
-  // Step 2: ChatGPT で評価
   const evalRaw = await callChatGPT(buildEvalPrompt(run.goal, proposal));
 
   let score = 0;
@@ -225,25 +277,26 @@ export async function runIteration(
   }
 
   const durationMs = Date.now() - start;
-  const reachedTarget = score >= targetScore;
+  const reachedTarget = score >= scoring.targetScore;
 
-  // Step 3: イテレーション記録（ROI + 動的スコア情報含む）
+  // イテレーション記録（統合スコア情報含む）
   await supabase.from("thinking_iterations").insert({
     run_id: runId,
     iteration: nextIteration,
     proposal,
     proposal_model: ANTHROPIC_API_KEY ? "claude-sonnet-4-20250514" : "mock",
-    evaluation,
-    score,
+    evaluation, score,
     eval_model: OPENAI_API_KEY ? "gpt-4o-mini" : "mock",
     improvements,
     duration_ms: durationMs,
-    estimated_roi: estimatedRoi,
-    dynamic_target_score: targetScore,
+    estimated_roi: scoring.estimatedRoi,
+    dynamic_target_score: scoring.targetScore,
     reached_target: reachedTarget,
+    success_rate: scoring.successRate,
+    cost_weight: scoring.costWeight,
+    effective_score: scoring.effectiveScore,
   });
 
-  // Step 4: Run更新
   const newBestScore = Math.max(run.best_score, score);
 
   let finalPlan = run.final_plan;
@@ -258,31 +311,28 @@ export async function runIteration(
 
   if (reachedTarget) {
     await supabase.from("agent_runs").update({
-      current_iteration: nextIteration,
-      best_score: newBestScore,
-      final_plan: finalPlan,
-      dynamic_target_score: targetScore,
-      status: "awaiting_approval",
+      current_iteration: nextIteration, best_score: newBestScore,
+      final_plan: finalPlan, dynamic_target_score: scoring.targetScore,
+      effective_score: scoring.effectiveScore, status: "awaiting_approval",
     }).eq("id", runId);
 
     await supabase.from("approval_requests").insert({
       run_id: runId, type: "plan_approval",
       title: `計画承認: ${run.title}`,
-      description: `${nextIteration}回の思考ループでスコア${score}点に到達（目標${targetScore}点, ROI ${estimatedRoi.toFixed(1)}x）`,
+      description: `${nextIteration}回でスコア${score}点到達（目標${scoring.targetScore}, 実効${scoring.effectiveScore.toFixed(1)}, ROI ${scoring.estimatedRoi.toFixed(1)}x, 成功率${(scoring.successRate * 100).toFixed(0)}%）`,
       plan: finalPlan,
     });
 
-    return { done: true, score, iteration: nextIteration, targetScore, estimatedRoi };
+    return { done: true, score, iteration: nextIteration, scoring };
   }
 
   await supabase.from("agent_runs").update({
-    current_iteration: nextIteration,
-    best_score: newBestScore,
-    final_plan: finalPlan,
-    dynamic_target_score: targetScore,
+    current_iteration: nextIteration, best_score: newBestScore,
+    final_plan: finalPlan, dynamic_target_score: scoring.targetScore,
+    effective_score: scoring.effectiveScore,
   }).eq("id", runId);
 
-  return { done: false, score, iteration: nextIteration, targetScore, estimatedRoi };
+  return { done: false, score, iteration: nextIteration, scoring };
 }
 
 // ============================================================

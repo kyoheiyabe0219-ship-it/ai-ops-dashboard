@@ -95,6 +95,9 @@ export type AgentRun = {
   estimated_roi: number;
   role: "ceo" | "normal" | "quick";
   dynamic_target_score: number;
+  success_rate: number;
+  time_cost: number;
+  effective_score: number;
   created_at: string;
   updated_at: string;
 };
@@ -113,6 +116,9 @@ export type ThinkingIteration = {
   estimated_roi: number;
   dynamic_target_score: number;
   reached_target: boolean;
+  success_rate: number;
+  cost_weight: number;
+  effective_score: number;
   created_at: string;
 };
 
