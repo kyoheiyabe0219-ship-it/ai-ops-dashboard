@@ -9,6 +9,7 @@ import { SupabaseClient } from "@supabase/supabase-js";
 import { buildMemoryPrompt, learnFromRun, saveDecision, calculateIntegratedScore } from "./memory-engine";
 import { selfEvaluate, proposeAlgorithmUpdate } from "./meta-engine";
 import { calculateGoalScore, proposeGoalUpdate } from "./goal-engine";
+import { calculateBusinessScore } from "./revenue-engine";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -306,8 +307,18 @@ export async function runIteration(
     iterationCount: nextIteration,
   });
 
-  // final_score = decision_score × 0.5 + goal_score × 0.5
-  const score = Math.round(decisionScore * 0.5 + goalBreakdown.total * 0.5);
+  // V8: business_score
+  const plan = (() => { try { const m = proposal.match(/\{[\s\S]*\}/); return m ? JSON.parse(m[0]) : {}; } catch { return {}; } })();
+  const planTasks = (plan.tasks as { content: string }[] | undefined) || [];
+  const businessBreakdown = await calculateBusinessScore(supabase, {
+    expectedRevenue: run.expected_value || 0,
+    revenueType: "blog", // デフォルト; 将来はplan内容から推定
+    isRepeatable: nextIteration > 1, // 繰り返し可能な戦略
+    taskCount: planTasks.length,
+  });
+
+  // V8 final: decision×0.3 + goal×0.3 + business×0.4
+  const score = Math.round(decisionScore * 0.3 + goalBreakdown.total * 0.3 + businessBreakdown.total * 0.4);
 
   const durationMs = Date.now() - start;
   const reachedTarget = score >= scoring.targetScore;

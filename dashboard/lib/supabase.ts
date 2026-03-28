@@ -132,6 +132,19 @@ export type DecisionMemory = {
   created_at: string;
 };
 
+export type RevenueStream = {
+  id: string;
+  type: "blog" | "affiliate" | "sns" | "video" | "tool";
+  name: string;
+  status: "active" | "testing" | "stopped";
+  monthly_revenue: number;
+  total_revenue: number;
+  growth_rate: number;
+  roi: number;
+  task_count: number;
+  created_at: string;
+};
+
 export type GoalFunction = {
   id: string;
   short_term_weight: number;
