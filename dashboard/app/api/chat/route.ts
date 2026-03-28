@@ -3,6 +3,7 @@ import { getServiceSupabase } from "@/lib/supabase-server";
 import { checkRateLimit, rateLimitResponse, apiResponse, apiError, handleOptions } from "@/lib/api-utils";
 import { parseCommand, generateResponse } from "@/lib/command-parser";
 import { runIteration, executeApprovedRun } from "@/lib/thinking-engine";
+import { createAndDeploy } from "@/lib/leverage-engine";
 
 export async function OPTIONS() { return handleOptions(); }
 
@@ -158,7 +159,20 @@ export async function POST(req: NextRequest) {
       }
 
       // ============================================================
-      // 既存intent（変更なし）
+      // deploy_content: 1コンテンツ→複数チャネル展開
+      // ============================================================
+      case "deploy_content": {
+        const result = await createAndDeploy(supabase, command.title);
+        actions.push({ api: "leverage.deploy", method: "POST", count: 1, status: "success", detail: `${result.deployments}ch, ${result.tasks}tasks` });
+        context.deployedContent = result;
+        resultData.content_id = result.contentId;
+        resultData.deployments = result.deployments;
+        resultData.tasks = result.tasks;
+        break;
+      }
+
+      // ============================================================
+      // 既存intent
       // ============================================================
       case "create_tasks": {
         let created = 0;

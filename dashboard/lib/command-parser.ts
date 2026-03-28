@@ -9,6 +9,7 @@ export type ParsedCommand =
   | { type: "create_run"; title: string; goal: string; expectedValue: number }
   | { type: "improve_run" }
   | { type: "execute_run" }
+  | { type: "deploy_content"; title: string }
   | { type: "create_tasks"; tasks: { content: string; priority: string; expected_value: number; cost: number }[] }
   | { type: "status" }
   | { type: "errors" }
@@ -86,6 +87,12 @@ export function parseCommand(input: string): ParsedCommand {
     return { type: "execute_run" };
   }
 
+  // ③b deploy_content（コンテンツ展開）
+  if (/展開|マルチ|チャネル|複数|配信|deploy|distribute|レバレッジ/i.test(text)) {
+    const title = text.replace(/(展開|して|を|に|で|マルチ|チャネル|複数|配信)/g, "").trim() || text;
+    return { type: "deploy_content", title };
+  }
+
   // ④ status
   if (/今[のは]?[状どう]|状況|どうなってる|ステータス|status/i.test(text)) {
     return { type: "status" };
@@ -155,6 +162,7 @@ export function generateResponse(command: ParsedCommand, context: {
   createdRun?: { id: string; title: string; score: number; status: string };
   improvedRun?: { id: string; score: number; iteration: number };
   executedRun?: { id: string; created: number };
+  deployedContent?: { contentId: string; deployments: number; tasks: number };
 }): string {
 
   switch (command.type) {
@@ -180,6 +188,12 @@ export function generateResponse(command: ParsedCommand, context: {
         return `⚡ 計画を実行に移しました\n\n生成タスク: ${r.created}件\n→ Workerが自動的に処理を開始します`;
       }
       return "⚡ 実行可能な承認済みRunがありません";
+    }
+
+    case "deploy_content": {
+      const d = context.deployedContent;
+      if (d) return `🔀 コンテンツを${d.deployments}チャネルに展開しました\n\n生成タスク: ${d.tasks}件\n→ 各チャネルのWorkerが処理を開始します`;
+      return "🔀 展開処理を実行中...";
     }
 
     case "create_tasks":

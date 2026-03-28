@@ -11,6 +11,7 @@ function formatYen(n: number) {
 type Stream = { id: string; type: string; name: string; status: string; monthly_revenue: number; total_revenue: number; roi: number; task_count: number };
 type CeoDecision = { action: string; target: string; reason: string };
 type ScalePlanItem = { action: string; stream_name: string; details: string; expected_multiplier: number; tasks_to_generate: { content: string }[] };
+type LeverageData = { total_assets: number; total_deployments: number; total_reuse: number; current_strategy: string; by_channel: Record<string, { count: number; published: number; revenue: number }>; top_assets: { title: string; reuse: number; revenue: number }[] };
 
 export default function DashboardTab({ tasks, runs }: { tasks: Task[]; runs: AgentRun[] }) {
   const [streams, setStreams] = useState<Stream[]>([]);
@@ -19,19 +20,24 @@ export default function DashboardTab({ tasks, runs }: { tasks: Task[]; runs: Age
   const [scalePlans, setScalePlans] = useState<ScalePlanItem[]>([]);
   const [bottlenecks, setBottlenecks] = useState<string[]>([]);
   const [investment, setInvestment] = useState<{ high_roi: number; mid_roi: number; low_roi: number }>({ high_roi: 0, mid_roi: 0, low_roi: 0 });
+  const [leverage, setLeverage] = useState<LeverageData | null>(null);
 
   const loadRevenue = useCallback(async () => {
-    const res = await fetch("/api/revenue").then(r => r.json()).catch(() => null);
-    if (res) {
-      setStreams(res.streams || []);
-      setCeoDecisions(res.ceo_decisions || []);
-      setSummary(res.summary || null);
-      if (res.scale) {
-        setScalePlans(res.scale.plans || []);
-        setBottlenecks(res.scale.bottlenecks || []);
-        setInvestment(res.scale.investment || { high_roi: 0, mid_roi: 0, low_roi: 0 });
+    const [revRes, levRes] = await Promise.all([
+      fetch("/api/revenue").then(r => r.json()).catch(() => null),
+      fetch("/api/leverage").then(r => r.json()).catch(() => null),
+    ]);
+    if (revRes) {
+      setStreams(revRes.streams || []);
+      setCeoDecisions(revRes.ceo_decisions || []);
+      setSummary(revRes.summary || null);
+      if (revRes.scale) {
+        setScalePlans(revRes.scale.plans || []);
+        setBottlenecks(revRes.scale.bottlenecks || []);
+        setInvestment(revRes.scale.investment || { high_roi: 0, mid_roi: 0, low_roi: 0 });
       }
     }
+    if (levRes) setLeverage(levRes);
   }, []);
 
   useEffect(() => { loadRevenue(); }, [loadRevenue]);
@@ -157,6 +163,54 @@ export default function DashboardTab({ tasks, runs }: { tasks: Task[]; runs: Age
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* レバレッジ（V9） */}
+      {leverage && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 mb-2">🔀 レバレッジ（1→N展開）</p>
+          <div className="bg-gray-900 rounded-xl p-3 border border-purple-900/30 space-y-2">
+            <div className="flex gap-3 text-xs">
+              <span>コンテンツ: {leverage.total_assets}</span>
+              <span className="text-purple-400">展開: {leverage.total_deployments}</span>
+              <span className="text-green-400">再利用: {leverage.total_reuse}回</span>
+              <span className={`px-1.5 py-0.5 rounded text-[10px] ${leverage.current_strategy === "revenue" ? "bg-green-900 text-green-300" : leverage.current_strategy === "spread" ? "bg-blue-900 text-blue-300" : "bg-purple-900 text-purple-300"}`}>
+                {leverage.current_strategy === "revenue" ? "💰収益重視" : leverage.current_strategy === "spread" ? "📢拡散重視" : "🌱全展開"}
+              </span>
+            </div>
+
+            {/* チャネル別 */}
+            {Object.keys(leverage.by_channel).length > 0 && (
+              <div className="space-y-1">
+                {Object.entries(leverage.by_channel).map(([ch, data]) => (
+                  <div key={ch} className="flex items-center gap-2 text-[10px]">
+                    <span className="text-gray-500 w-20 truncate">{ch}</span>
+                    <div className="flex-1 bg-gray-800 rounded-full h-1.5">
+                      <div className="h-1.5 rounded-full bg-purple-500" style={{ width: `${Math.min(data.count * 20, 100)}%` }} />
+                    </div>
+                    <span className="text-gray-600">{data.published}/{data.count}</span>
+                    {data.revenue > 0 && <span className="text-green-400">{formatYen(data.revenue)}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* TOPコンテンツ */}
+            {leverage.top_assets.length > 0 && (
+              <div>
+                <p className="text-[10px] text-gray-500 mb-1">TOP コンテンツ</p>
+                {leverage.top_assets.map((a, i) => (
+                  <div key={i} className="flex items-center gap-2 text-[10px] mb-0.5">
+                    <span className="text-gray-600">#{i + 1}</span>
+                    <span className="text-gray-400 flex-1 truncate">{a.title}</span>
+                    <span className="text-purple-400">×{a.reuse}</span>
+                    {a.revenue > 0 && <span className="text-green-400">{formatYen(a.revenue)}</span>}
+                  </div>
+                ))}
+              </div>
+            )}
           </div>
         </div>
       )}
