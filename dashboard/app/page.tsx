@@ -49,7 +49,7 @@ const DECISION_CONFIG: Record<DecisionLog["type"], { icon: string; color: string
   stop:       { icon: "🛑", color: "text-red-400",    border: "border-red-800",    bg: "bg-red-950",    label: "停止" },
 };
 
-const DISPATCHER_URL = process.env.NEXT_PUBLIC_DISPATCHER_URL || "http://localhost:3001";
+const DISPATCHER_URL = process.env.NEXT_PUBLIC_DISPATCHER_URL || "/api";
 
 function timeAgo(dateStr: string): string {
   const diff = Date.now() - new Date(dateStr).getTime();

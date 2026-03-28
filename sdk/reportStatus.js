@@ -7,12 +7,16 @@
  */
 
 const DISPATCHER_URL =
-  process.env.DISPATCHER_URL || "http://localhost:3001";
+  process.env.DISPATCHER_URL || "https://dashboard-zeta-flame-74.vercel.app/api";
+const API_SECRET = process.env.API_SECRET || "";
 
 async function reportStatus({ agent_id, name, status, task, progress }) {
+  const headers = { "Content-Type": "application/json" };
+  if (API_SECRET) headers["x-api-key"] = API_SECRET;
+
   const res = await fetch(`${DISPATCHER_URL}/update`, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify({ agent_id, name, status, task, progress }),
   });
 
