@@ -874,7 +874,25 @@ function ChatSection({ messages, setMessages, dispatcherUrl, onTaskCreated }: {
   const [chatSending, setChatSending] = useState(false);
   const [executions, setExecutions] = useState<Record<string, ExecutionData>>({});
   const [expanded, setExpanded] = useState<Record<string, boolean>>({});
+  const [loaded, setLoaded] = useState(false);
   const chatEndRef = { current: null as HTMLDivElement | null };
+
+  // 初回: API Route経由でDB履歴を読み込み
+  useEffect(() => {
+    if (loaded) return;
+    (async () => {
+      try {
+        const res = await fetch(`${dispatcherUrl}/chat?limit=100`);
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data) && data.length > 0) {
+            setMessages(data as ChatMessage[]);
+          }
+        }
+      } catch { /* ネットワークエラー時は空のまま */ }
+      setLoaded(true);
+    })();
+  }, [dispatcherUrl, loaded, setMessages]);
 
   function toggleExpand(msgId: string) {
     setExpanded((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
@@ -888,7 +906,9 @@ function ChatSection({ messages, setMessages, dispatcherUrl, onTaskCreated }: {
     setChatInput("");
     setChatSending(true);
 
-    const tempUser: ChatMessage = { id: `temp-${Date.now()}`, role: "user", content: msg, meta: {}, created_at: new Date().toISOString() };
+    // Optimistic: ユーザーメッセージ即表示
+    const tempUserId = `temp-${Date.now()}`;
+    const tempUser: ChatMessage = { id: tempUserId, role: "user", content: msg, meta: {}, created_at: new Date().toISOString() };
     setMessages((prev) => [...prev, tempUser]);
 
     try {
@@ -912,7 +932,7 @@ function ChatSection({ messages, setMessages, dispatcherUrl, onTaskCreated }: {
           setExecutions((prev) => ({ ...prev, [assistantId]: data.execution }));
         }
 
-        if (data.command_type === "create_tasks") onTaskCreated();
+        if (data.command_type === "create_tasks" || data.command_type === "execute_run") onTaskCreated();
       }
     } catch {
       const errMsg: ChatMessage = { id: `temp-${Date.now()}-e`, role: "assistant", content: "送信失敗。ネットワークを確認してください。", meta: {}, created_at: new Date().toISOString() };
@@ -922,11 +942,13 @@ function ChatSection({ messages, setMessages, dispatcherUrl, onTaskCreated }: {
     }
   }
 
+  // 自動スクロール
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  });
+  }, [messages.length]);
 
   const intentLabel: Record<string, string> = {
+    create_run: "CEO計画立案", improve_run: "計画改善", execute_run: "計画実行",
     create_tasks: "タスク作成", status: "状態確認", errors: "エラー確認",
     roi_report: "ROIレポート", agent_list: "エージェント一覧", run_decision: "意思決定実行", unknown: "不明",
   };
@@ -1110,7 +1132,8 @@ export default function Dashboard() {
   }, []);
 
   const loadChat = useCallback(() => {
-    supabase.from("chat_messages").select("*").order("created_at", { ascending: true }).limit(100).then(({ data }) => { if (data) setChatMessages(data as ChatMessage[]); });
+    // ChatSection内でAPI経由で読み込むため、ここでは何もしない
+    // （Supabase client直接は PostgREST キャッシュ問題で不安定）
   }, []);
 
   const loadRuns = useCallback(() => {
@@ -1164,14 +1187,10 @@ export default function Dashboard() {
       setDecisions((prev) => [p.new as DecisionLog, ...prev]);
     }).subscribe();
 
-    const chatCh = supabase.channel("chat-rt").on("postgres_changes", { event: "INSERT", schema: "public", table: "chat_messages" }, (p) => {
-      setChatMessages((prev) => [...prev, p.new as ChatMessage]);
-    }).subscribe();
-
     const runsCh = supabase.channel("runs-rt").on("postgres_changes", { event: "*", schema: "public", table: "agent_runs" }, () => { loadRuns(); }).subscribe();
     const approvalsCh = supabase.channel("approvals-rt").on("postgres_changes", { event: "*", schema: "public", table: "approval_requests" }, () => { loadRuns(); }).subscribe();
 
-    return () => { [agentCh, taskCh, logCh, alertCh, decisionCh, chatCh, runsCh, approvalsCh].forEach(ch => supabase.removeChannel(ch)); };
+    return () => { [agentCh, taskCh, logCh, alertCh, decisionCh, runsCh, approvalsCh].forEach(ch => supabase.removeChannel(ch)); };
   }, [loadTasks, loadLogs, loadAlerts, loadDecisions, loadChat, loadRuns]);
 
   // 集計
