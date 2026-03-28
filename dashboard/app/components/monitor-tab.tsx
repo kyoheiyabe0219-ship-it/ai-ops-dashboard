@@ -214,37 +214,45 @@ export default function MonitorTab({
         </div>
       )}
 
-      {/* メモリ（AI OSの記憶） */}
+      {/* メモリ（V4: 進化型） */}
       <div>
-        <p className="text-xs font-semibold text-gray-400 mb-2">🧠 メモリ</p>
-        <div className="grid grid-cols-2 gap-2">
-          {/* 成功戦略 */}
-          <div className="bg-gray-900 rounded-xl p-3 border border-green-900/30">
-            <p className="text-[10px] text-green-400 font-medium mb-1.5">成功戦略</p>
-            {knowledge.filter(k => k.type === "strategy").length === 0 && (
-              <p className="text-[10px] text-gray-600">蓄積なし</p>
-            )}
-            {knowledge.filter(k => k.type === "strategy").slice(0, 3).map(k => (
-              <p key={k.id} className="text-[10px] text-gray-400 truncate mb-0.5">{k.content}</p>
-            ))}
-          </div>
+        <p className="text-xs font-semibold text-gray-400 mb-2">🧠 メモリ（進化型）</p>
 
-          {/* 失敗パターン */}
-          <div className="bg-gray-900 rounded-xl p-3 border border-red-900/30">
-            <p className="text-[10px] text-red-400 font-medium mb-1.5">失敗パターン</p>
-            {knowledge.filter(k => k.type === "failure").length === 0 && (
-              <p className="text-[10px] text-gray-600">蓄積なし</p>
-            )}
-            {knowledge.filter(k => k.type === "failure").slice(0, 3).map(k => (
-              <p key={k.id} className="text-[10px] text-gray-400 truncate mb-0.5">{k.content}</p>
-            ))}
-          </div>
+        {/* 記憶一覧（weight順） */}
+        <div className="space-y-1.5">
+          {knowledge.length === 0 && <p className="text-[10px] text-gray-600 text-center py-3">記憶なし</p>}
+          {knowledge.filter(k => k.is_active !== false).map(k => {
+            const w = k.weight || 1;
+            const isBlocked = k.type === "failure" && w > 0.7;
+            const isPriority = k.type === "strategy" && w > 1.5;
+            const isForced = k.type === "improvement" && w > 1.2;
+            const isDying = w < 0.5;
+
+            const borderColor = isBlocked ? "border-red-700" : isPriority ? "border-green-700" : isForced ? "border-blue-700" : isDying ? "border-gray-700 opacity-50" : "border-gray-800";
+            const typeIcon = k.type === "strategy" ? "⭐" : k.type === "failure" ? "🚫" : k.type === "improvement" ? "💡" : "📝";
+            const badge = isBlocked ? "🔴禁止" : isPriority ? "⭐推奨" : isForced ? "✅必須" : isDying ? "💀減衰" : null;
+
+            return (
+              <div key={k.id} className={`flex items-center gap-2 bg-gray-900 rounded-lg px-3 py-2 border ${borderColor}`}>
+                <span className="text-xs">{typeIcon}</span>
+                <span className="flex-1 text-[10px] text-gray-400 truncate">{k.content}</span>
+                {badge && <span className="text-[9px] shrink-0">{badge}</span>}
+                <div className="flex items-center gap-1 shrink-0">
+                  <div className="w-10 bg-gray-800 rounded-full h-1">
+                    <div className={`h-1 rounded-full ${w > 1.5 ? "bg-green-500" : w > 0.7 ? "bg-blue-500" : "bg-red-500"}`}
+                      style={{ width: `${Math.min(w / 3 * 100, 100)}%` }} />
+                  </div>
+                  <span className="text-[9px] text-gray-600 w-6 text-right">{w.toFixed(1)}</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
 
-        {/* 直近の意思決定 */}
+        {/* 判断履歴 */}
         {decisions.length > 0 && (
-          <div className="mt-2">
-            <p className="text-[10px] text-gray-500 mb-1">直近の判断</p>
+          <div className="mt-3">
+            <p className="text-[10px] text-gray-500 mb-1">判断履歴</p>
             {decisions.slice(0, 5).map(d => (
               <div key={d.id} className="flex items-center gap-1.5 text-[10px] mb-0.5">
                 <span className={d.success_flag ? "text-green-500" : d.success_flag === false ? "text-red-500" : "text-gray-600"}>

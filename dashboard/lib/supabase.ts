@@ -111,9 +111,11 @@ export type KnowledgeMemory = {
   type: "strategy" | "task_pattern" | "failure" | "improvement";
   content: string;
   score: number;
-  source_run_id: string | null;
+  weight: number;
+  usage_count: number;
+  is_active: boolean;
+  last_used_at: string | null;
   tags: string[];
-  access_count: number;
   created_at: string;
 };
 
