@@ -10,11 +10,15 @@ function formatYen(n: number) {
 
 type Stream = { id: string; type: string; name: string; status: string; monthly_revenue: number; total_revenue: number; roi: number; task_count: number };
 type CeoDecision = { action: string; target: string; reason: string };
+type ScalePlanItem = { action: string; stream_name: string; details: string; expected_multiplier: number; tasks_to_generate: { content: string }[] };
 
 export default function DashboardTab({ tasks, runs }: { tasks: Task[]; runs: AgentRun[] }) {
   const [streams, setStreams] = useState<Stream[]>([]);
   const [ceoDecisions, setCeoDecisions] = useState<CeoDecision[]>([]);
   const [summary, setSummary] = useState<{ monthly_revenue: number; total_revenue: number; active_streams: number; testing_streams: number; avg_roi: number } | null>(null);
+  const [scalePlans, setScalePlans] = useState<ScalePlanItem[]>([]);
+  const [bottlenecks, setBottlenecks] = useState<string[]>([]);
+  const [investment, setInvestment] = useState<{ high_roi: number; mid_roi: number; low_roi: number }>({ high_roi: 0, mid_roi: 0, low_roi: 0 });
 
   const loadRevenue = useCallback(async () => {
     const res = await fetch("/api/revenue").then(r => r.json()).catch(() => null);
@@ -22,6 +26,11 @@ export default function DashboardTab({ tasks, runs }: { tasks: Task[]; runs: Age
       setStreams(res.streams || []);
       setCeoDecisions(res.ceo_decisions || []);
       setSummary(res.summary || null);
+      if (res.scale) {
+        setScalePlans(res.scale.plans || []);
+        setBottlenecks(res.scale.bottlenecks || []);
+        setInvestment(res.scale.investment || { high_roi: 0, mid_roi: 0, low_roi: 0 });
+      }
     }
   }, []);
 
@@ -106,6 +115,52 @@ export default function DashboardTab({ tasks, runs }: { tasks: Task[]; runs: Age
         </div>
       </div>
 
+      {/* ボトルネック */}
+      {bottlenecks.length > 0 && (
+        <div className="bg-red-950/30 border border-red-900/50 rounded-xl p-3">
+          <p className="text-xs font-semibold text-red-400 mb-1.5">⚠️ ボトルネック</p>
+          {bottlenecks.map((b, i) => (
+            <p key={i} className="text-[10px] text-red-300 mb-0.5">• {b}</p>
+          ))}
+        </div>
+      )}
+
+      {/* 投資配分 */}
+      {(investment.high_roi !== 0 || investment.low_roi !== 0) && (
+        <div className="bg-gray-900 rounded-xl p-3 border border-gray-800">
+          <p className="text-xs font-semibold text-gray-400 mb-1">📊 投資配分</p>
+          <div className="flex gap-3 text-xs">
+            {investment.high_roi > 0 && <span className="text-green-400">高ROI: +{investment.high_roi}%</span>}
+            {investment.mid_roi === 0 && <span className="text-gray-500">中ROI: 維持</span>}
+            {investment.low_roi < 0 && <span className="text-red-400">低ROI: {investment.low_roi}%</span>}
+          </div>
+        </div>
+      )}
+
+      {/* スケールプラン */}
+      {scalePlans.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 mb-2">🚀 スケールプラン</p>
+          <div className="space-y-1.5">
+            {scalePlans.map((p, i) => {
+              const icon = p.action === "scale" ? "📈" : p.action === "replicate" ? "📋" : p.action === "diversify" ? "🌱" : p.action === "stop" ? "🛑" : "⚡";
+              const color = p.action === "scale" ? "border-green-900/50" : p.action === "stop" ? "border-red-900/50" : "border-gray-800";
+              return (
+                <div key={i} className={`bg-gray-900 rounded-lg px-3 py-2 border ${color}`}>
+                  <div className="flex items-center gap-2">
+                    <span>{icon}</span>
+                    <span className="text-xs font-medium flex-1">{p.stream_name}</span>
+                    {p.expected_multiplier > 1 && <span className="text-[10px] text-green-400">×{p.expected_multiplier}</span>}
+                    <span className="text-[10px] text-gray-600">{p.tasks_to_generate.length}タスク</span>
+                  </div>
+                  <p className="text-[10px] text-gray-500 mt-0.5">{p.details}</p>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
       {/* Run実績 */}
       <div className="bg-gray-900 rounded-xl p-3 border border-gray-800">
         <p className="text-xs font-semibold text-gray-400 mb-1">思考ループ</p>
@@ -113,7 +168,6 @@ export default function DashboardTab({ tasks, runs }: { tasks: Task[]; runs: Age
           <span>全{runs.length}</span>
           <span className="text-green-400">完了{runs.filter(r => r.status === "done").length}</span>
           <span className="text-purple-400">思考{runs.filter(r => r.status === "thinking").length}</span>
-          <span className="text-yellow-400">承認待{runs.filter(r => r.status === "awaiting_approval").length}</span>
         </div>
       </div>
     </div>

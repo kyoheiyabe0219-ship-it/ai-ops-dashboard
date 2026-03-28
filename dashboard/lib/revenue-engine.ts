@@ -1,10 +1,12 @@
 /**
- * 収益エンジン V8 — 稼ぎ続けるAI
+ * 収益エンジン V8.5 — 増殖して稼ぐAI
  *
- * 戦略生成 → コンテンツ作成 → 投稿 → 収益発生 → ログ → memory → 次戦略
+ * V8: 稼ぐ
+ * V8.5: 成功を10倍にする
  *
- * business_score = revenue×0.4 + scalability×0.3 + repeatability×0.2 + automation×0.1
- * final_score = decision×0.3 + goal×0.3 + business×0.4
+ * スケールロジック: ROI>5 & success>60% → 横展開
+ * 投資配分: 高ROI +50% / 低ROI -50%
+ * ボトルネック検出: agent不足/コンテンツ不足/投稿頻度
  */
 
 import { SupabaseClient } from "@supabase/supabase-js";
@@ -177,4 +179,180 @@ export async function getRevenueSummary(supabase: SupabaseClient) {
     avg_roi: Math.round(avgRoi * 100) / 100,
     by_type: byType,
   };
+}
+
+// ============================================================
+// スケールエンジン（V8.5）
+// ============================================================
+
+const SCALE_NICHES = ["クレジットカード", "転職", "投資", "ガジェット", "副業", "プログラミング", "英語学習", "ダイエット", "旅行", "ペット"];
+
+export type ScalePlan = {
+  action: "scale" | "diversify" | "replicate" | "stop" | "optimize";
+  stream_id: string;
+  stream_name: string;
+  details: string;
+  expected_multiplier: number;
+  tasks_to_generate: { content: string; priority: string; revenue_type: string }[];
+};
+
+export async function generateScalePlan(supabase: SupabaseClient): Promise<{
+  plans: ScalePlan[];
+  bottlenecks: string[];
+  investment: { high_roi: number; mid_roi: number; low_roi: number };
+}> {
+  const { data: streams } = await supabase.from("revenue_streams").select("*").order("roi", { ascending: false });
+  const { data: agents } = await supabase.from("agents").select("status, role");
+  const { data: tasks } = await supabase.from("tasks").select("status").in("status", ["pending", "running"]);
+
+  const all = streams || [];
+  const plans: ScalePlan[] = [];
+
+  // 投資配分計算
+  const highRoi = all.filter(s => s.roi > 5 && s.status === "active");
+  const midRoi = all.filter(s => s.roi >= 1 && s.roi <= 5);
+  const lowRoi = all.filter(s => s.roi < 1 && s.status !== "stopped");
+  const investment = {
+    high_roi: highRoi.length > 0 ? 50 : 0,  // +50%
+    mid_roi: midRoi.length > 0 ? 0 : 0,     // 維持
+    low_roi: lowRoi.length > 0 ? -50 : 0,   // -50%
+  };
+
+  // SCALE: 高ROIストリームを横展開
+  for (const s of highRoi) {
+    // 使用済みニッチを除外
+    const usedNiches = all.map(st => st.name);
+    const availableNiches = SCALE_NICHES.filter(n => !usedNiches.some(u => u.includes(n)));
+    const targetNiches = availableNiches.slice(0, 3);
+
+    if (targetNiches.length > 0) {
+      const tasks = targetNiches.map(niche => ({
+        content: `${s.type === "blog" ? "SEO記事" : s.type}:${niche}`,
+        priority: "high" as const,
+        revenue_type: s.type,
+      }));
+
+      plans.push({
+        action: "scale",
+        stream_id: s.id,
+        stream_name: s.name,
+        details: `ROI ${s.roi.toFixed(1)}x → ${targetNiches.join("/")}に横展開`,
+        expected_multiplier: Math.min(targetNiches.length, 3),
+        tasks_to_generate: tasks,
+      });
+    }
+
+    // 同ジャンル量産（10倍）
+    plans.push({
+      action: "replicate",
+      stream_id: s.id,
+      stream_name: s.name,
+      details: `成功パターンを${Math.min(s.task_count * 2, 10)}件複製`,
+      expected_multiplier: 2,
+      tasks_to_generate: Array.from({ length: Math.min(s.task_count, 5) }, (_, i) => ({
+        content: `[量産#${i + 1}] ${s.name}の派生コンテンツ`,
+        priority: "medium" as const,
+        revenue_type: s.type,
+      })),
+    });
+  }
+
+  // DIVERSIFY: 新ジャンルテスト
+  const types: RevenueStream["type"][] = ["blog", "affiliate", "sns", "video", "tool"];
+  const activeTypes = new Set(all.filter(s => s.status === "active").map(s => s.type));
+  const missingTypes = types.filter(t => !activeTypes.has(t));
+
+  if (missingTypes.length > 0 && all.length < 10) {
+    const testType = missingTypes[0];
+    plans.push({
+      action: "diversify",
+      stream_id: "",
+      stream_name: `新規: ${testType}`,
+      details: `未開拓の${testType}カテゴリをテスト`,
+      expected_multiplier: 1,
+      tasks_to_generate: [{ content: `${testType}収益化テスト`, priority: "medium", revenue_type: testType }],
+    });
+  }
+
+  // STOP: 低ROIを停止
+  for (const s of lowRoi) {
+    if (s.task_count >= 3) {
+      plans.push({
+        action: "stop",
+        stream_id: s.id,
+        stream_name: s.name,
+        details: `ROI ${s.roi.toFixed(1)}x, ${s.task_count}タスク消化済み → 撤退`,
+        expected_multiplier: 0,
+        tasks_to_generate: [],
+      });
+    }
+  }
+
+  // ボトルネック検出
+  const bottlenecks: string[] = [];
+  const idleAgents = (agents || []).filter(a => a.status === "idle").length;
+  const runningAgents = (agents || []).filter(a => a.status === "running").length;
+  const pendingTasks = (tasks || []).filter(t => t.status === "pending").length;
+  const runningTasks = (tasks || []).filter(t => t.status === "running").length;
+
+  if (idleAgents === 0 && pendingTasks > 3) {
+    bottlenecks.push(`Agent不足: ${pendingTasks}タスク待機中、idle Agent 0人`);
+  }
+  if (runningAgents === 0) {
+    bottlenecks.push("稼働Agent 0: 全員idle or error");
+  }
+  if (highRoi.length > 0 && pendingTasks < 3) {
+    bottlenecks.push(`コンテンツ不足: 高ROIストリーム${highRoi.length}本あるがタスク${pendingTasks}件のみ`);
+  }
+  if (all.filter(s => s.status === "active").length < 2) {
+    bottlenecks.push("収益分散不足: アクティブストリーム2未満");
+  }
+
+  return { plans, bottlenecks, investment };
+}
+
+// ============================================================
+// スケールプラン実行（タスク生成）
+// ============================================================
+
+export async function executeScalePlan(
+  supabase: SupabaseClient,
+  plan: ScalePlan
+): Promise<{ created: number; streamId: string | null }> {
+  let streamId = plan.stream_id;
+
+  // 新規ストリーム作成（diversify時）
+  if (plan.action === "diversify" && !streamId) {
+    const type = plan.tasks_to_generate[0]?.revenue_type || "blog";
+    const stream = await createRevenueStream(supabase, type as RevenueStream["type"], plan.stream_name);
+    if (stream) streamId = stream.id;
+  }
+
+  // STOP
+  if (plan.action === "stop" && streamId) {
+    await supabase.from("revenue_streams").update({ status: "stopped" }).eq("id", streamId);
+    return { created: 0, streamId };
+  }
+
+  // タスク生成
+  let created = 0;
+  for (const t of plan.tasks_to_generate) {
+    const { error } = await supabase.from("tasks").insert({
+      content: t.content,
+      priority: t.priority,
+      status: "pending",
+      revenue_type: t.revenue_type,
+    });
+    if (!error) created++;
+  }
+
+  // ストリームのタスクカウント更新
+  if (streamId && created > 0) {
+    const { data: s } = await supabase.from("revenue_streams").select("task_count").eq("id", streamId).single();
+    if (s) {
+      await supabase.from("revenue_streams").update({ task_count: (s.task_count || 0) + created }).eq("id", streamId);
+    }
+  }
+
+  return { created, streamId };
 }
