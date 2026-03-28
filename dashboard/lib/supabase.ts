@@ -122,12 +122,41 @@ export type ThinkingIteration = {
   created_at: string;
 };
 
+export type SuccessPattern = {
+  id: string;
+  task_type: string;
+  pattern: Record<string, unknown>;
+  sample_content: string;
+  success_count: number;
+  total_count: number;
+  success_rate: number;
+  avg_roi: number;
+  total_revenue: number;
+  last_generated_at: string | null;
+  created_at: string;
+};
+
+export type FailurePattern = {
+  id: string;
+  task_type: string;
+  pattern: Record<string, unknown>;
+  failure_count: number;
+  total_count: number;
+  failure_rate: number;
+  avg_roi: number;
+  blocked: boolean;
+  created_at: string;
+};
+
 export type AutonomousConfig = {
   id: string;
   enabled: boolean;
+  mode: "safe" | "aggressive";
+  auto_mode_switch: boolean;
   max_parallel_runs: number;
   max_total_tasks: number;
   max_auto_gen_per_hour: number;
+  max_per_pattern_per_hour: number;
   auto_approve_min_effective: number;
   auto_approve_min_roi: number;
   auto_approve_min_success_rate: number;

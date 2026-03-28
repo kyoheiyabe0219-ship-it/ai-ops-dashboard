@@ -1,22 +1,23 @@
 /**
- * 自律ループエンジン
+ * 自律ループエンジン v2
  *
- * 1分ごとに実行:
- * 1. 収益分析 → 高パフォーマンスパターン抽出
- * 2. 類似タスク/AgentRun自動生成
- * 3. 自動承認（条件満たせば人間不要）
- * 4. フィードバック（success_rate更新）
- * 5. エージェント増殖/削減
+ * 成功パターン学習 + モード分岐 + 構造ベース横展開
  */
 
 import { SupabaseClient } from "@supabase/supabase-js";
 import { runIteration, executeApprovedRun } from "./thinking-engine";
+import { updatePatterns, getExpansionCandidates, calculateRoiTrend } from "./pattern-engine";
 
 type Config = {
   enabled: boolean;
+  mode: "safe" | "aggressive";
+  auto_mode_switch: boolean;
+  roi_switch_up_threshold: number;
+  roi_switch_down_threshold: number;
   max_parallel_runs: number;
   max_total_tasks: number;
   max_auto_gen_per_hour: number;
+  max_per_pattern_per_hour: number;
   auto_approve_min_effective: number;
   auto_approve_min_roi: number;
   auto_approve_min_success_rate: number;
@@ -24,64 +25,73 @@ type Config = {
   agent_kill_threshold: number;
 };
 
+// モード別パラメータ
+const MODE_PARAMS = {
+  safe:       { maxRunsPerCycle: 1, minRoiForGen: 5, approveStrictness: 1.0 },
+  aggressive: { maxRunsPerCycle: 3, minRoiForGen: 2, approveStrictness: 0.7 },
+};
+
 type ActionLog = { action: string; detail: string; status: "ok" | "skip" | "error" };
 
-export async function runAutonomousCycle(supabase: SupabaseClient): Promise<{
-  actions: ActionLog[];
-  runs_created: number;
-  tasks_generated: number;
-  agents_spawned: number;
-  agents_killed: number;
-  auto_approved: number;
-  duration_ms: number;
-}> {
+export async function runAutonomousCycle(supabase: SupabaseClient) {
   const start = Date.now();
   const actions: ActionLog[] = [];
   let runsCreated = 0, tasksGenerated = 0, agentsSpawned = 0, agentsKilled = 0, autoApproved = 0;
 
-  // 設定取得
   const { data: cfgRow } = await supabase.from("autonomous_config").select("*").eq("id", "default").single();
-  const cfg: Config = cfgRow || { enabled: false, max_parallel_runs: 10, max_total_tasks: 50, max_auto_gen_per_hour: 20, auto_approve_min_effective: 5, auto_approve_min_roi: 5, auto_approve_min_success_rate: 0.6, agent_spawn_threshold: 10, agent_kill_threshold: 0.3 };
+  const cfg: Config = cfgRow || {
+    enabled: false, mode: "safe", auto_mode_switch: true,
+    roi_switch_up_threshold: 5, roi_switch_down_threshold: 2,
+    max_parallel_runs: 10, max_total_tasks: 50, max_auto_gen_per_hour: 20,
+    max_per_pattern_per_hour: 3,
+    auto_approve_min_effective: 5, auto_approve_min_roi: 5,
+    auto_approve_min_success_rate: 0.6,
+    agent_spawn_threshold: 10, agent_kill_threshold: 0.3,
+  };
 
   if (!cfg.enabled) {
-    return { actions: [{ action: "skip", detail: "Autonomous mode disabled", status: "skip" }], runs_created: 0, tasks_generated: 0, agents_spawned: 0, agents_killed: 0, auto_approved: 0, duration_ms: Date.now() - start };
+    return { actions: [{ action: "skip", detail: "Autonomous mode disabled", status: "skip" as const }], runs_created: 0, tasks_generated: 0, agents_spawned: 0, agents_killed: 0, auto_approved: 0, duration_ms: Date.now() - start, mode: cfg.mode };
   }
 
-  // ============================================================
-  // ① ガードレール確認
-  // ============================================================
+  const modeParams = MODE_PARAMS[cfg.mode] || MODE_PARAMS.safe;
+  actions.push({ action: "mode", detail: `${cfg.mode.toUpperCase()} モードで実行`, status: "ok" });
+
+  // ガードレール
   const { data: activeRuns } = await supabase.from("agent_runs").select("id").in("status", ["thinking", "executing"]);
-  if ((activeRuns || []).length >= cfg.max_parallel_runs) {
-    actions.push({ action: "guard", detail: `並列Run上限 ${cfg.max_parallel_runs} 到達`, status: "skip" });
-    // 自動承認だけは引き続き実行
-  }
+  const runsAtLimit = (activeRuns || []).length >= cfg.max_parallel_runs;
 
   const { data: allTasks } = await supabase.from("tasks").select("id").in("status", ["pending", "running"]);
-  const taskGuard = (allTasks || []).length >= cfg.max_total_tasks;
-  if (taskGuard) {
-    actions.push({ action: "guard", detail: `タスク上限 ${cfg.max_total_tasks} 到達`, status: "skip" });
-  }
+  const tasksAtLimit = (allTasks || []).length >= cfg.max_total_tasks;
 
-  // 1時間内の自動生成数チェック
   const oneHourAgo = new Date(Date.now() - 3600000).toISOString();
   const { data: recentLogs } = await supabase.from("autonomous_logs").select("runs_created, tasks_generated").gte("created_at", oneHourAgo);
   const hourlyGenerated = (recentLogs || []).reduce((s, l) => s + (l.runs_created || 0) + (l.tasks_generated || 0), 0);
   const genBudget = cfg.max_auto_gen_per_hour - hourlyGenerated;
 
   // ============================================================
-  // ② 自動承認（常に実行）
+  // ① パターン更新（フィードバックループ）
   // ============================================================
   try {
-    const { data: pendingApprovals } = await supabase
-      .from("approval_requests")
-      .select("id, run_id, plan")
-      .eq("status", "pending");
+    const patternResult = await updatePatterns(supabase);
+    if (patternResult.success > 0 || patternResult.failure > 0) {
+      actions.push({ action: "pattern_update", detail: `成功${patternResult.success} / 失敗${patternResult.failure}パターン更新`, status: "ok" });
+    }
+  } catch (e) {
+    actions.push({ action: "pattern_error", detail: e instanceof Error ? e.message : "error", status: "error" });
+  }
+
+  // ============================================================
+  // ② 自動承認
+  // ============================================================
+  try {
+    const { data: pendingApprovals } = await supabase.from("approval_requests").select("id, run_id").eq("status", "pending");
 
     for (const approval of pendingApprovals || []) {
       const { data: run } = await supabase.from("agent_runs").select("effective_score, estimated_roi, success_rate").eq("id", approval.run_id).single();
       if (!run) continue;
 
-      const meetsEffective = (run.effective_score || 0) >= cfg.auto_approve_min_effective;
+      const threshold = cfg.auto_approve_min_effective * modeParams.approveStrictness;
+      const meetsEffective = (run.effective_score || 0) >= threshold;
       const meetsRoi = (run.estimated_roi || 0) >= cfg.auto_approve_min_roi;
       const meetsSuccess = (run.success_rate || 0) >= cfg.auto_approve_min_success_rate;
 
@@ -89,11 +99,10 @@ export async function runAutonomousCycle(supabase: SupabaseClient): Promise<{
         await supabase.from("approval_requests").update({ status: "approved", responded_at: new Date().toISOString() }).eq("id", approval.id);
         await supabase.from("agent_runs").update({ status: "approved" }).eq("id", approval.run_id);
 
-        // 即座に実行
         try {
           const result = await executeApprovedRun(supabase, approval.run_id);
           tasksGenerated += result.created;
-          actions.push({ action: "auto_approve+execute", detail: `Run ${approval.run_id.substring(0, 8)}... → ${result.created}タスク生成`, status: "ok" });
+          actions.push({ action: "auto_approve", detail: `Run → ${result.created}タスク (閾値${threshold.toFixed(1)})`, status: "ok" });
         } catch (e) {
           actions.push({ action: "auto_execute_fail", detail: e instanceof Error ? e.message : "error", status: "error" });
         }
@@ -101,67 +110,55 @@ export async function runAutonomousCycle(supabase: SupabaseClient): Promise<{
       }
     }
   } catch (e) {
-    actions.push({ action: "auto_approve_error", detail: e instanceof Error ? e.message : "error", status: "error" });
+    actions.push({ action: "approve_error", detail: e instanceof Error ? e.message : "error", status: "error" });
   }
 
   // ============================================================
-  // ③ 高パフォーマンスタスク分析 → AgentRun自動生成
+  // ③ パターンベース横展開（核心）
   // ============================================================
-  if (genBudget > 0 && !taskGuard && (activeRuns || []).length < cfg.max_parallel_runs) {
+  if (genBudget > 0 && !tasksAtLimit && !runsAtLimit) {
     try {
-      const { data: topTasks } = await supabase
-        .from("tasks")
-        .select("content, roi, expected_value, cost, status")
-        .eq("status", "done")
-        .gt("roi", 3)
-        .order("roi", { ascending: false })
-        .limit(5);
+      const candidates = await getExpansionCandidates(supabase, cfg.max_per_pattern_per_hour);
+      const maxRuns = Math.min(modeParams.maxRunsPerCycle, genBudget, candidates.length);
 
-      if (topTasks && topTasks.length > 0) {
-        // 最高ROIタスクを元にRun生成（最大2件/サイクル）
-        const toGenerate = Math.min(2, genBudget);
-        for (let i = 0; i < toGenerate && i < topTasks.length; i++) {
-          const base = topTasks[i];
-          const { data: newRun } = await supabase.from("agent_runs").insert({
-            title: `[自動] ${base.content}の拡張`,
-            goal: `「${base.content}」（ROI ${base.roi?.toFixed(1)}x）の成功パターンを横展開し、類似タスクを3件生成する`,
-            expected_value: base.expected_value || 0,
-            estimated_cost: base.cost || 1,
-            role: "quick",
-            status: "thinking",
-            created_by: "autonomous",
-          }).select("id").single();
+      for (let i = 0; i < maxRuns; i++) {
+        const c = candidates[i];
+        if (c.avg_roi < modeParams.minRoiForGen) continue;
 
-          if (newRun) {
-            // 初回イテレーション実行
-            try {
-              await runIteration(supabase, newRun.id);
-              runsCreated++;
-              actions.push({ action: "create_run", detail: `「${base.content}」ベースでRun生成 (ROI ${base.roi?.toFixed(1)}x)`, status: "ok" });
-            } catch (e) {
-              actions.push({ action: "iterate_fail", detail: e instanceof Error ? e.message : "error", status: "error" });
-            }
+        const { data: newRun } = await supabase.from("agent_runs").insert({
+          title: `[自動/${cfg.mode}] ${c.task_type}横展開`,
+          goal: `成功パターン「${c.task_type}」（ROI ${c.avg_roi.toFixed(1)}x, 成功率${(c.success_rate * 100).toFixed(0)}%）を別切り口で展開。元: "${c.sample}"`,
+          expected_value: Math.round(c.avg_roi * 1000),
+          estimated_cost: 1000,
+          role: "quick",
+          status: "thinking",
+          created_by: "autonomous",
+        }).select("id").single();
+
+        if (newRun) {
+          try {
+            await runIteration(supabase, newRun.id);
+            runsCreated++;
+            actions.push({ action: "expand_pattern", detail: `${c.task_type} (ROI ${c.avg_roi.toFixed(1)}x, 成功${(c.success_rate * 100).toFixed(0)}%)`, status: "ok" });
+          } catch (e) {
+            actions.push({ action: "expand_fail", detail: e instanceof Error ? e.message : "error", status: "error" });
           }
         }
-      } else {
-        actions.push({ action: "analyze", detail: "高ROIタスクなし（ROI > 3）", status: "skip" });
+      }
+
+      if (candidates.length === 0) {
+        actions.push({ action: "expand", detail: "展開可能な成功パターンなし", status: "skip" });
       }
     } catch (e) {
-      actions.push({ action: "analyze_error", detail: e instanceof Error ? e.message : "error", status: "error" });
+      actions.push({ action: "expand_error", detail: e instanceof Error ? e.message : "error", status: "error" });
     }
   }
 
   // ============================================================
-  // ④ thinking中のRunを1イテレーション進める
+  // ④ thinking中Run進行
   // ============================================================
   try {
-    const { data: thinkingRuns } = await supabase
-      .from("agent_runs")
-      .select("id")
-      .eq("status", "thinking")
-      .order("created_at", { ascending: true })
-      .limit(3);
-
+    const { data: thinkingRuns } = await supabase.from("agent_runs").select("id").eq("status", "thinking").order("created_at", { ascending: true }).limit(3);
     for (const run of thinkingRuns || []) {
       try {
         await runIteration(supabase, run.id);
@@ -175,7 +172,7 @@ export async function runAutonomousCycle(supabase: SupabaseClient): Promise<{
   }
 
   // ============================================================
-  // ⑤ エージェント自己増殖
+  // ⑤ エージェント増殖/削減
   // ============================================================
   try {
     const { data: recentDone } = await supabase.from("agent_runs").select("effective_score").eq("status", "done").order("updated_at", { ascending: false }).limit(3);
@@ -184,43 +181,54 @@ export async function runAutonomousCycle(supabase: SupabaseClient): Promise<{
       const newId = `AUTO_${(agents || []).length + 1}`;
       await supabase.from("agents").upsert({ id: newId, name: `自動生成AI #${(agents || []).length + 1}`, status: "idle", task: "", progress: 0 }, { onConflict: "id" });
       agentsSpawned++;
-      actions.push({ action: "spawn_agent", detail: `${newId} を生成（実効スコア3連続 >= ${cfg.agent_spawn_threshold}）`, status: "ok" });
+      actions.push({ action: "spawn_agent", detail: newId, status: "ok" });
     }
-  } catch (e) {
-    actions.push({ action: "spawn_error", detail: e instanceof Error ? e.message : "error", status: "error" });
-  }
+  } catch { /* skip */ }
 
-  // ============================================================
-  // ⑥ エージェント削減
-  // ============================================================
   try {
     const { data: agents } = await supabase.from("agents").select("id, name, status");
     for (const agent of agents || []) {
       const { data: agentTasks } = await supabase.from("tasks").select("status").eq("assigned_to", agent.id).order("created_at", { ascending: false }).limit(10);
       if (!agentTasks || agentTasks.length < 5) continue;
-      const doneCount = agentTasks.filter(t => t.status === "done").length;
-      const rate = doneCount / agentTasks.length;
+      const rate = agentTasks.filter(t => t.status === "done").length / agentTasks.length;
       if (rate < cfg.agent_kill_threshold && agent.status !== "running") {
-        await supabase.from("agents").update({ status: "idle", task: "[自律停止] 低成功率" }).eq("id", agent.id);
+        await supabase.from("agents").update({ status: "idle", task: "[自律停止]" }).eq("id", agent.id);
         agentsKilled++;
-        actions.push({ action: "kill_agent", detail: `${agent.name} (成功率 ${(rate * 100).toFixed(0)}% < ${cfg.agent_kill_threshold * 100}%)`, status: "ok" });
+        actions.push({ action: "kill_agent", detail: `${agent.name} (${(rate * 100).toFixed(0)}%)`, status: "ok" });
       }
     }
-  } catch (e) {
-    actions.push({ action: "kill_error", detail: e instanceof Error ? e.message : "error", status: "error" });
-  }
+  } catch { /* skip */ }
 
   // ============================================================
-  // ⑦ 優先度自動調整
+  // ⑥ 優先度自動調整
   // ============================================================
   try {
-    // 高ROI pending → high
     await supabase.from("tasks").update({ priority: "high" }).eq("status", "pending").gt("roi", 5).neq("priority", "high");
-    // 低ROI pending → low
     await supabase.from("tasks").update({ priority: "low" }).eq("status", "pending").lt("roi", 1).neq("priority", "low");
-    actions.push({ action: "priority_adjust", detail: "ROIベース優先度調整", status: "ok" });
-  } catch (e) {
-    actions.push({ action: "priority_error", detail: e instanceof Error ? e.message : "error", status: "error" });
+    actions.push({ action: "priority", detail: "ROIベース調整", status: "ok" });
+  } catch { /* skip */ }
+
+  // ============================================================
+  // ⑦ 自動モード切替
+  // ============================================================
+  if (cfg.auto_mode_switch) {
+    try {
+      const trend = await calculateRoiTrend(supabase);
+      let newMode = cfg.mode;
+
+      if (trend.recent_avg_roi >= cfg.roi_switch_up_threshold && cfg.mode === "safe") {
+        newMode = "aggressive";
+      } else if (trend.recent_avg_roi <= cfg.roi_switch_down_threshold && cfg.mode === "aggressive") {
+        newMode = "safe";
+      }
+
+      if (newMode !== cfg.mode) {
+        await supabase.from("autonomous_config").update({ mode: newMode }).eq("id", "default");
+        actions.push({ action: "mode_switch", detail: `${cfg.mode} → ${newMode} (ROIトレンド: ${trend.recent_avg_roi.toFixed(1)}x ${trend.trend})`, status: "ok" });
+      } else {
+        actions.push({ action: "mode_check", detail: `${cfg.mode}維持 (ROI ${trend.recent_avg_roi.toFixed(1)}x ${trend.trend})`, status: "ok" });
+      }
+    } catch { /* skip */ }
   }
 
   const durationMs = Date.now() - start;
@@ -230,15 +238,9 @@ export async function runAutonomousCycle(supabase: SupabaseClient): Promise<{
   const cycle = ((lastLog as { cycle: number }[] | null)?.[0]?.cycle || 0) + 1;
 
   await supabase.from("autonomous_logs").insert({
-    cycle,
-    actions_taken: actions,
-    runs_created: runsCreated,
-    tasks_generated: tasksGenerated,
-    agents_spawned: agentsSpawned,
-    agents_killed: agentsKilled,
-    auto_approved: autoApproved,
-    duration_ms: durationMs,
+    cycle, actions_taken: actions, runs_created: runsCreated, tasks_generated: tasksGenerated,
+    agents_spawned: agentsSpawned, agents_killed: agentsKilled, auto_approved: autoApproved, duration_ms: durationMs,
   });
 
-  return { actions, runs_created: runsCreated, tasks_generated: tasksGenerated, agents_spawned: agentsSpawned, agents_killed: agentsKilled, auto_approved: autoApproved, duration_ms: durationMs };
+  return { actions, runs_created: runsCreated, tasks_generated: tasksGenerated, agents_spawned: agentsSpawned, agents_killed: agentsKilled, auto_approved: autoApproved, duration_ms: durationMs, mode: cfg.mode };
 }

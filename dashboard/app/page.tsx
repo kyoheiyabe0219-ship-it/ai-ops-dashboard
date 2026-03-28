@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, FormEvent, useCallback } from "react";
-import { getSupabase, Agent, Task, MonetizationLog, Alert, DecisionLog, ChatMessage, AgentRun, ThinkingIteration, ApprovalRequest, AutonomousConfig, AutonomousLog } from "@/lib/supabase";
+import { getSupabase, Agent, Task, MonetizationLog, Alert, DecisionLog, ChatMessage, AgentRun, ThinkingIteration, ApprovalRequest, SuccessPattern, FailurePattern, AutonomousConfig, AutonomousLog } from "@/lib/supabase";
 
 // ============================================================
 // 定数
@@ -363,35 +363,32 @@ function BottomNav({ active, onChange, unreadAlerts }: {
 function AutonomousSection({ dispatcherUrl }: { dispatcherUrl: string }) {
   const [config, setConfig] = useState<AutonomousConfig | null>(null);
   const [logs, setLogs] = useState<AutonomousLog[]>([]);
+  const [patterns, setPatterns] = useState<{ success: SuccessPattern[]; failure: FailurePattern[]; mode: string; trend: { recent_avg_roi: number; overall_avg_roi: number; trend: string } }>({ success: [], failure: [], mode: "safe", trend: { recent_avg_roi: 0, overall_avg_roi: 0, trend: "stable" } });
   const [loading, setLoading] = useState(true);
   const [running, setRunning] = useState(false);
 
   const load = useCallback(async () => {
-    const res = await fetch(`${dispatcherUrl}/autonomous`);
-    const data = await res.json();
-    setConfig(data.config); setLogs(data.logs || []); setLoading(false);
+    const [autoRes, patRes] = await Promise.all([
+      fetch(`${dispatcherUrl}/autonomous`).then(r => r.json()),
+      fetch(`${dispatcherUrl}/patterns`).then(r => r.json()).catch(() => null),
+    ]);
+    setConfig(autoRes.config); setLogs(autoRes.logs || []);
+    if (patRes) setPatterns({ success: patRes.success_patterns || [], failure: patRes.failure_patterns || [], mode: patRes.mode || "safe", trend: patRes.trend || { recent_avg_roi: 0, overall_avg_roi: 0, trend: "stable" } });
+    setLoading(false);
   }, [dispatcherUrl]);
 
   useEffect(() => { load(); }, [load]);
 
   async function toggle() {
     if (!config) return;
-    await fetch(`${dispatcherUrl}/autonomous`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ enabled: !config.enabled }),
-    });
+    await fetch(`${dispatcherUrl}/autonomous`, { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ enabled: !config.enabled }) });
     load();
   }
 
   async function runCycle() {
     setRunning(true);
     try {
-      await fetch(`${dispatcherUrl}/autonomous`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ action: "run_cycle" }),
-      });
+      await fetch(`${dispatcherUrl}/autonomous`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "run_cycle" }) });
       load();
     } finally { setRunning(false); }
   }
@@ -402,17 +399,27 @@ function AutonomousSection({ dispatcherUrl }: { dispatcherUrl: string }) {
   const totalTasks = logs.reduce((s, l) => s + (l.tasks_generated || 0), 0);
   const totalApproved = logs.reduce((s, l) => s + (l.auto_approved || 0), 0);
   const totalSpawned = logs.reduce((s, l) => s + (l.agents_spawned || 0), 0);
+  const trendIcon = patterns.trend.trend === "up" ? "📈" : patterns.trend.trend === "down" ? "📉" : "➡️";
 
   return (
     <div className="space-y-4">
-      {/* ON/OFF + ステータス */}
-      <div className={`rounded-xl border p-4 ${config?.enabled ? "border-green-800 bg-green-950/30" : "border-gray-800 bg-gray-900"}`}>
+      {/* ヘッダー: ON/OFF + モード */}
+      <div className={`rounded-xl border p-4 ${config?.enabled ? (patterns.mode === "aggressive" ? "border-orange-800 bg-orange-950/20" : "border-green-800 bg-green-950/20") : "border-gray-800 bg-gray-900"}`}>
         <div className="flex items-center justify-between mb-3">
           <div className="flex items-center gap-3">
-            <span className="text-2xl">{config?.enabled ? "⚡" : "⏸️"}</span>
+            <span className="text-2xl">{config?.enabled ? (patterns.mode === "aggressive" ? "🔥" : "⚡") : "⏸️"}</span>
             <div>
-              <p className="text-sm font-bold">{config?.enabled ? "自律モード ON" : "自律モード OFF"}</p>
-              <p className="text-[10px] text-gray-500">{config?.enabled ? "AIが自動で事業を回しています" : "手動モード — 人間が操作"}</p>
+              <div className="flex items-center gap-2">
+                <p className="text-sm font-bold">{config?.enabled ? "自律モード ON" : "自律モード OFF"}</p>
+                {config?.enabled && (
+                  <span className={`text-[10px] px-1.5 py-0.5 rounded ${patterns.mode === "aggressive" ? "bg-orange-900 text-orange-300" : "bg-green-900 text-green-300"}`}>
+                    {patterns.mode.toUpperCase()}
+                  </span>
+                )}
+              </div>
+              <p className="text-[10px] text-gray-500">
+                {trendIcon} ROI {patterns.trend.recent_avg_roi.toFixed(1)}x（全体 {patterns.trend.overall_avg_roi.toFixed(1)}x）
+              </p>
             </div>
           </div>
           <button onClick={toggle}
@@ -421,13 +428,12 @@ function AutonomousSection({ dispatcherUrl }: { dispatcherUrl: string }) {
           </button>
         </div>
 
-        {/* サマリーカード */}
         <div className="grid grid-cols-4 gap-2">
           {[
             { label: "自動Run", value: totalRuns, color: "text-purple-400" },
-            { label: "生成タスク", value: totalTasks, color: "text-blue-400" },
+            { label: "生成Task", value: totalTasks, color: "text-blue-400" },
             { label: "自動承認", value: totalApproved, color: "text-green-400" },
-            { label: "Agent生成", value: totalSpawned, color: "text-yellow-400" },
+            { label: "Agent増", value: totalSpawned, color: "text-yellow-400" },
           ].map(s => (
             <div key={s.label} className="bg-gray-800 rounded-lg p-2 text-center">
               <p className={`text-lg font-bold ${s.color}`}>{s.value}</p>
@@ -437,30 +443,63 @@ function AutonomousSection({ dispatcherUrl }: { dispatcherUrl: string }) {
         </div>
       </div>
 
-      {/* 手動実行ボタン */}
       <button onClick={runCycle} disabled={running}
         className="w-full bg-purple-800 hover:bg-purple-700 disabled:bg-gray-700 text-purple-200 disabled:text-gray-500 py-2.5 rounded-xl text-sm font-medium transition">
         {running ? "実行中..." : "🔄 手動サイクル実行"}
       </button>
 
-      {/* ガードレール */}
-      {config && (
-        <div className="bg-gray-900 rounded-xl p-3 border border-gray-800">
-          <p className="text-xs font-semibold text-gray-400 mb-2">安全設定</p>
-          <div className="grid grid-cols-2 gap-2 text-[10px] text-gray-500">
-            <span>並列Run上限: {config.max_parallel_runs}</span>
-            <span>タスク上限: {config.max_total_tasks}</span>
-            <span>生成上限/時: {config.max_auto_gen_per_hour}</span>
-            <span>自動承認: 実効 ≥ {config.auto_approve_min_effective}</span>
-            <span>Agent増殖: 実効 ≥ {config.agent_spawn_threshold}</span>
-            <span>Agent削減: 成功率 {"<"} {(config.agent_kill_threshold * 100).toFixed(0)}%</span>
+      {/* 成功パターン */}
+      <div>
+        <p className="text-xs font-semibold text-gray-400 mb-2">🏆 成功パターン</p>
+        <div className="space-y-1.5">
+          {patterns.success.length === 0 && <p className="text-gray-600 text-center py-3 text-[11px]">パターンなし（タスク完了後に自動抽出）</p>}
+          {patterns.success.map(p => (
+            <div key={p.id} className="flex items-center gap-2 bg-gray-900 rounded-lg px-3 py-2 border border-green-900/30">
+              <span className="text-green-400 text-xs font-bold">{p.task_type}</span>
+              <span className="flex-1" />
+              <span className="text-[10px] text-purple-400">ROI {p.avg_roi.toFixed(1)}x</span>
+              <span className="text-[10px] text-blue-400">{(p.success_rate * 100).toFixed(0)}%</span>
+              <span className="text-[10px] text-gray-600">{p.success_count}/{p.total_count}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 失敗パターン */}
+      {patterns.failure.length > 0 && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 mb-2">🚫 失敗パターン（ブロック中）</p>
+          <div className="space-y-1.5">
+            {patterns.failure.map(p => (
+              <div key={p.id} className="flex items-center gap-2 bg-gray-900 rounded-lg px-3 py-2 border border-red-900/30">
+                <span className="text-red-400 text-xs">{p.task_type}</span>
+                <span className="flex-1" />
+                <span className="text-[10px] text-red-400">失敗率 {(p.failure_rate * 100).toFixed(0)}%</span>
+                {p.blocked && <span className="text-[9px] bg-red-900 text-red-300 px-1.5 py-0.5 rounded">BLOCKED</span>}
+              </div>
+            ))}
           </div>
         </div>
       )}
 
+      {/* 安全設定 */}
+      {config && (
+        <details className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
+          <summary className="px-3 py-2 text-xs text-gray-500 cursor-pointer hover:text-gray-300">安全設定</summary>
+          <div className="px-3 pb-2 grid grid-cols-2 gap-1.5 text-[10px] text-gray-600">
+            <span>モード: {config.mode} {config.auto_mode_switch ? "(自動切替)" : ""}</span>
+            <span>並列Run: {config.max_parallel_runs}</span>
+            <span>タスク上限: {config.max_total_tasks}</span>
+            <span>生成/時: {config.max_auto_gen_per_hour}</span>
+            <span>パターン/時: {config.max_per_pattern_per_hour}</span>
+            <span>自動承認: 実効≥{config.auto_approve_min_effective}</span>
+          </div>
+        </details>
+      )}
+
       {/* ログ */}
       <div>
-        <p className="text-xs text-gray-500 mb-2">実行ログ（直近{logs.length}件）</p>
+        <p className="text-xs text-gray-500 mb-2">実行ログ</p>
         <div className="space-y-2">
           {logs.length === 0 && <p className="text-gray-600 text-center py-4 text-sm">ログなし</p>}
           {logs.map(log => (
@@ -468,11 +507,9 @@ function AutonomousSection({ dispatcherUrl }: { dispatcherUrl: string }) {
               <summary className="px-3 py-2 cursor-pointer hover:bg-gray-800 transition">
                 <div className="flex items-center gap-2 text-xs">
                   <span className="text-gray-500">#{log.cycle}</span>
-                  {log.runs_created > 0 && <span className="text-purple-400">+{log.runs_created}Run</span>}
-                  {log.tasks_generated > 0 && <span className="text-blue-400">+{log.tasks_generated}Task</span>}
-                  {log.auto_approved > 0 && <span className="text-green-400">+{log.auto_approved}承認</span>}
-                  {log.agents_spawned > 0 && <span className="text-yellow-400">+{log.agents_spawned}Agent</span>}
-                  {log.agents_killed > 0 && <span className="text-red-400">-{log.agents_killed}Agent</span>}
+                  {log.runs_created > 0 && <span className="text-purple-400">+{log.runs_created}R</span>}
+                  {log.tasks_generated > 0 && <span className="text-blue-400">+{log.tasks_generated}T</span>}
+                  {log.auto_approved > 0 && <span className="text-green-400">+{log.auto_approved}A</span>}
                   <span className="flex-1" />
                   <span className="text-gray-700">{log.duration_ms}ms</span>
                   <span className="text-gray-700">{new Date(log.created_at).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}</span>
@@ -485,7 +522,7 @@ function AutonomousSection({ dispatcherUrl }: { dispatcherUrl: string }) {
                       {a.status === "ok" ? "✓" : a.status === "error" ? "✗" : "○"}
                     </span>
                     <span className="text-gray-500">{a.action}</span>
-                    <span className="text-gray-400">{a.detail}</span>
+                    <span className="text-gray-400 truncate">{a.detail}</span>
                   </div>
                 ))}
               </div>
