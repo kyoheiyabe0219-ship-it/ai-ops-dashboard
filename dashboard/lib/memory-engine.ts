@@ -1,17 +1,13 @@
 /**
- * AI OS メモリエンジン V4 — 自己進化型
+ * AI OS メモリエンジン V4.5 — 判断進化型
  *
- * 記憶は蓄積するのではなく進化する:
- * - 使われるほど重くなる（weight↑）
- * - 使われないと忘れる（decay）
- * - 成功で強化、失敗で弱化
- * - 閾値超えでプロンプトを制御（参照→制御）
+ * V4: 記憶が進化する
+ * V4.5: 判断が進化する
  *
- * weight閾値:
- *   failure weight > 0.7 → その戦略を禁止
- *   strategy weight > 1.5 → 優先実行
- *   improvement weight > 1.2 → プロンプトに強制追加
- *   weight < 0.3 → 非活性化
+ * 記憶進化: weight/decay/usage
+ * 判断進化: confidence/impact/reuse
+ * スコア統合: AI評価×0.5 + memory_weight×0.3 + decision_confidence×0.2
+ * 動的explore: パフォーマンスに応じて探索率を変動
  */
 
 import { SupabaseClient } from "@supabase/supabase-js";
@@ -297,26 +293,170 @@ export async function buildMemoryPrompt(supabase: SupabaseClient): Promise<strin
 }
 
 // ============================================================
-// explore/exploit判定
+// 判断進化（V4.5）
 // ============================================================
 
-export async function shouldExplore(supabase: SupabaseClient): Promise<boolean> {
-  // 80%はexploit（成功パターン使用）、20%はexplore（新規戦略）
-  if (Math.random() < 0.2) return true;
+/** 判断成功フィードバック */
+export async function reinforceDecision(supabase: SupabaseClient, decisionId: string, roi: number) {
+  const { data } = await supabase.from("decision_memory").select("confidence, impact_score").eq("id", decisionId).single();
+  if (!data) return;
+  await supabase.from("decision_memory").update({
+    confidence: Math.min((data.confidence || 0.5) + 0.1, 1.0),
+    impact_score: (data.impact_score || 0) + roi,
+  }).eq("id", decisionId);
+}
 
-  // 同一戦略3回連続 → 強制explore
+/** 判断失敗フィードバック */
+export async function weakenDecision(supabase: SupabaseClient, decisionId: string) {
+  const { data } = await supabase.from("decision_memory").select("confidence").eq("id", decisionId).single();
+  if (!data) return;
+  await supabase.from("decision_memory").update({
+    confidence: Math.max((data.confidence || 0.5) - 0.2, 0),
+  }).eq("id", decisionId);
+}
+
+/** 類似判断を検索（再利用） */
+export async function findSimilarDecision(
+  supabase: SupabaseClient,
+  goalKeywords: string[]
+): Promise<{ id: string; confidence: number; reason: string; outcome: string } | null> {
+  const { data } = await supabase
+    .from("decision_memory")
+    .select("id, confidence, reason, outcome, reuse_count")
+    .eq("success_flag", true)
+    .gt("confidence", 0.6)
+    .order("confidence", { ascending: false })
+    .limit(20);
+
+  if (!data) return null;
+
+  // キーワードマッチで類似判断を検索
+  for (const d of data) {
+    const matches = goalKeywords.filter(kw => d.reason.includes(kw));
+    if (matches.length >= 1) {
+      // 再利用カウント更新
+      await supabase.from("decision_memory").update({
+        reuse_count: (d.reuse_count || 0) + 1,
+      }).eq("id", d.id);
+      return { id: d.id, confidence: d.confidence || 0.5, reason: d.reason, outcome: d.outcome };
+    }
+  }
+  return null;
+}
+
+// ============================================================
+// スコア統合（V4.5）
+// AI評価 × 0.5 + memory_weight × 0.3 + decision_confidence × 0.2
+// ============================================================
+
+export async function calculateIntegratedScore(
+  supabase: SupabaseClient,
+  aiScore: number,
+  goalKeywords: string[]
+): Promise<{ integrated: number; aiComponent: number; memoryComponent: number; decisionComponent: number; reusedDecision: string | null }> {
+  // memory_weight: 使用された記憶の平均weight
+  const { data: usedMemories } = await supabase
+    .from("knowledge_memory")
+    .select("weight")
+    .eq("is_active", true)
+    .gt("weight", 1.0)
+    .order("weight", { ascending: false })
+    .limit(5);
+  const avgWeight = (usedMemories || []).length > 0
+    ? (usedMemories || []).reduce((s, m) => s + (m.weight || 1), 0) / (usedMemories || []).length
+    : 1.0;
+  const memoryScore = Math.min(avgWeight / 3 * 100, 100); // 正規化: weight 3.0 = 100点
+
+  // decision_confidence: 類似判断の信頼度
+  const similar = await findSimilarDecision(supabase, goalKeywords);
+  const decisionScore = similar ? similar.confidence * 100 : 50; // 0.5デフォルト
+
+  const aiComponent = aiScore * 0.5;
+  const memoryComponent = memoryScore * 0.3;
+  const decisionComponent = decisionScore * 0.2;
+  const integrated = Math.round(aiComponent + memoryComponent + decisionComponent);
+
+  return {
+    integrated,
+    aiComponent: Math.round(aiComponent),
+    memoryComponent: Math.round(memoryComponent),
+    decisionComponent: Math.round(decisionComponent),
+    reusedDecision: similar ? `${similar.reason} (conf:${similar.confidence.toFixed(2)})` : null,
+  };
+}
+
+// ============================================================
+// 動的explore（V4.5）
+// ============================================================
+
+export async function calculateExploreRate(supabase: SupabaseClient): Promise<{ rate: number; reason: string }> {
+  // 直近5件のRunスコア推移
   const { data: recentRuns } = await supabase
     .from("agent_runs")
-    .select("title")
-    .eq("created_by", "autonomous")
+    .select("best_score, status, title")
     .order("created_at", { ascending: false })
-    .limit(3);
+    .limit(5);
 
-  if (recentRuns && recentRuns.length >= 3) {
-    const titles = recentRuns.map(r => r.title);
-    const allSame = titles.every(t => t === titles[0]);
-    if (allSame) return true;
+  if (!recentRuns || recentRuns.length < 3) {
+    return { rate: 0.2, reason: "データ不足（デフォルト20%）" };
   }
 
-  return false;
+  const scores = recentRuns.map(r => r.best_score || 0);
+  const avgScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+  const failures = recentRuns.filter(r => r.status === "failed" || r.status === "rejected").length;
+
+  // 停滞検出: スコアが±5以内で3件連続
+  const isStagnant = scores.length >= 3 && Math.max(...scores.slice(0, 3)) - Math.min(...scores.slice(0, 3)) < 5;
+
+  // 同一タイトル3回連続
+  const titles = recentRuns.map(r => r.title);
+  const isRepetitive = titles.length >= 3 && titles[0] === titles[1] && titles[1] === titles[2];
+
+  if (failures >= 3) return { rate: 0.4, reason: `失敗${failures}/5件 → 探索強化40%` };
+  if (isStagnant) return { rate: 0.35, reason: `スコア停滞(±5) → 探索35%` };
+  if (isRepetitive) return { rate: 0.3, reason: `同一戦略3連続 → 探索30%` };
+  if (avgScore > 80) return { rate: 0.1, reason: `高パフォーマンス(avg${avgScore.toFixed(0)}) → 最適化重視10%` };
+
+  return { rate: 0.2, reason: `通常運転 → 探索20%` };
+}
+
+export async function shouldExplore(supabase: SupabaseClient): Promise<{ explore: boolean; rate: number; reason: string }> {
+  const { rate, reason } = await calculateExploreRate(supabase);
+  return { explore: Math.random() < rate, rate, reason };
+}
+
+// ============================================================
+// メモリ圧縮（同タイプの類似記憶を統合）
+// ============================================================
+
+export async function compressMemories(supabase: SupabaseClient): Promise<number> {
+  const { data: memories } = await supabase
+    .from("knowledge_memory")
+    .select("*")
+    .eq("is_active", true)
+    .order("type", { ascending: true })
+    .order("weight", { ascending: false });
+
+  if (!memories || memories.length < 5) return 0;
+
+  let merged = 0;
+  const seen = new Map<string, string>(); // type+firstWords → id
+
+  for (const m of memories) {
+    const key = `${m.type}:${m.content.substring(0, 20)}`;
+    const existing = seen.get(key);
+
+    if (existing && existing !== m.id) {
+      // 類似記憶 → weight高い方に統合、低い方を非活性化
+      const { data: other } = await supabase.from("knowledge_memory").select("weight").eq("id", existing).single();
+      if (other && (other.weight || 0) >= (m.weight || 0)) {
+        await supabase.from("knowledge_memory").update({ is_active: false }).eq("id", m.id);
+        merged++;
+      }
+    } else {
+      seen.set(key, m.id);
+    }
+  }
+
+  return merged;
 }

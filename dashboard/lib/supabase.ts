@@ -125,6 +125,9 @@ export type DecisionMemory = {
   reason: string;
   outcome: string;
   success_flag: boolean | null;
+  confidence: number;
+  impact_score: number;
+  reuse_count: number;
   source_run_id: string | null;
   created_at: string;
 };

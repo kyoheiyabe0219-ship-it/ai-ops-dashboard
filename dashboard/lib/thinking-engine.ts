@@ -6,7 +6,7 @@
  */
 
 import { SupabaseClient } from "@supabase/supabase-js";
-import { buildMemoryPrompt, learnFromRun, saveDecision } from "./memory-engine";
+import { buildMemoryPrompt, learnFromRun, saveDecision, calculateIntegratedScore } from "./memory-engine";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -272,7 +272,7 @@ export async function runIteration(
   const proposal = await callClaude(buildProposalPrompt(run.goal, memoryContext, prevIteration));
   const evalRaw = await callChatGPT(buildEvalPrompt(run.goal, proposal));
 
-  let score = 0;
+  let aiScore = 0;
   let evaluation = evalRaw;
   let improvements = "";
 
@@ -280,14 +280,19 @@ export async function runIteration(
     const jsonMatch = evalRaw.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       const parsed = JSON.parse(jsonMatch[0]);
-      score = parsed.score || 0;
+      aiScore = parsed.score || 0;
       evaluation = JSON.stringify(parsed, null, 2);
       improvements = parsed.improvements || "";
     }
   } catch {
-    score = 0;
+    aiScore = 0;
     improvements = "評価結果のパースに失敗";
   }
+
+  // V4.5: スコア統合（AI×0.5 + Memory×0.3 + Decision×0.2）
+  const goalKeywords = run.goal.split(/[\s　、。]+/).filter((w: string) => w.length >= 2).slice(0, 5);
+  const integrated = await calculateIntegratedScore(supabase, aiScore, goalKeywords);
+  const score = integrated.integrated;
 
   const durationMs = Date.now() - start;
   const reachedTarget = score >= scoring.targetScore;

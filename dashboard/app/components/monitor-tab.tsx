@@ -249,18 +249,29 @@ export default function MonitorTab({
           })}
         </div>
 
-        {/* 判断履歴 */}
+        {/* 判断履歴（V4.5: confidence付き） */}
         {decisions.length > 0 && (
           <div className="mt-3">
-            <p className="text-[10px] text-gray-500 mb-1">判断履歴</p>
-            {decisions.slice(0, 5).map(d => (
-              <div key={d.id} className="flex items-center gap-1.5 text-[10px] mb-0.5">
-                <span className={d.success_flag ? "text-green-500" : d.success_flag === false ? "text-red-500" : "text-gray-600"}>
-                  {d.success_flag ? "✓" : d.success_flag === false ? "✗" : "○"}
-                </span>
-                <span className="text-gray-500 truncate">{d.reason}</span>
-              </div>
-            ))}
+            <p className="text-[10px] text-gray-500 mb-1">判断進化</p>
+            {decisions.slice(0, 5).map(d => {
+              const conf = d.confidence || 0.5;
+              return (
+                <div key={d.id} className="flex items-center gap-1.5 text-[10px] mb-1">
+                  <span className={d.success_flag ? "text-green-500" : d.success_flag === false ? "text-red-500" : "text-gray-600"}>
+                    {d.success_flag ? "✓" : d.success_flag === false ? "✗" : "○"}
+                  </span>
+                  <span className="text-gray-500 truncate flex-1">{d.reason}</span>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <div className="w-8 bg-gray-800 rounded-full h-1">
+                      <div className={`h-1 rounded-full ${conf > 0.7 ? "bg-green-500" : conf > 0.4 ? "bg-yellow-500" : "bg-red-500"}`}
+                        style={{ width: `${conf * 100}%` }} />
+                    </div>
+                    <span className="text-[9px] text-gray-600">{conf.toFixed(1)}</span>
+                    {(d.reuse_count || 0) > 0 && <span className="text-[9px] text-purple-500">×{d.reuse_count}</span>}
+                  </div>
+                </div>
+              );
+            })}
           </div>
         )}
       </div>
