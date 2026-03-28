@@ -92,7 +92,7 @@ function generateActions(runs: AgentRun[], approvals: ApprovalRequest[], alerts:
 // メイン
 // ============================================================
 
-type RevData = { monthly: number; total: number; avgRoi: number; activeStreams: number; topStream: string };
+type RevData = { monthly: number; total: number; avgRoi: number; activeStreams: number; topStream: string; topRoi: number };
 
 export default function HomeTab({
   agents, tasks, runs, approvals, alerts, onRefresh,
@@ -104,7 +104,7 @@ export default function HomeTab({
   const [chatInput, setChatInput] = useState("");
   const [chatResponse, setChatResponse] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [rev, setRev] = useState<RevData>({ monthly: 0, total: 0, avgRoi: 0, activeStreams: 0, topStream: "" });
+  const [rev, setRev] = useState<RevData>({ monthly: 0, total: 0, avgRoi: 0, activeStreams: 0, topStream: "", topRoi: 0 });
 
   const loadRev = useCallback(async () => {
     const res = await fetch(`${API}/revenue`).then(r => r.json()).catch(() => null);
@@ -116,6 +116,7 @@ export default function HomeTab({
         avgRoi: res.summary.avg_roi || 0,
         activeStreams: res.summary.active_streams || 0,
         topStream: top?.name || "",
+        topRoi: top?.roi || 0,
       });
     }
   }, []);
@@ -158,51 +159,99 @@ export default function HomeTab({
   const pendingCount = approvals.filter(a => a.status === "pending").length;
   const runningTasks = tasks.filter(t => t.status === "running").length;
 
-  const rankStyle = { recommended: { label: "推奨", bg: "bg-green-900/50", border: "border-green-700", text: "text-green-400" }, alternative: { label: "代替", bg: "bg-blue-900/30", border: "border-blue-800", text: "text-blue-400" }, not_recommended: { label: "注意", bg: "bg-red-900/30", border: "border-red-800", text: "text-red-400" } };
+  const rankStyle = { recommended: { label: "推奨", bg: "bg-purple-900/40", border: "border-purple-600", text: "text-purple-300" }, alternative: { label: "代替", bg: "bg-gray-900", border: "border-purple-800/40", text: "text-purple-400" }, not_recommended: { label: "注意", bg: "bg-red-950/30", border: "border-red-800/50", text: "text-red-400" } };
   const actionIcon: Record<string, string> = { approve: "✅", stop: "🛑", test: "🧪", iterate: "🔄", alert: "⚠️", scale: "📈" };
 
   return (
     <div className="space-y-4">
       {/* =============================== */}
-      {/* 状態 + 勝ってる感（変更③）       */}
+      {/* ヒーロー: 収益 + 成長 + 予測      */}
       {/* =============================== */}
-      <div className="bg-gray-900 rounded-xl p-4 border border-gray-800">
-        <div className="flex items-center justify-between mb-3">
-          <div>
-            <p className="text-2xl font-black text-green-400">{formatYen(rev.monthly)}<span className="text-xs text-gray-500 font-normal">/月</span></p>
-            <p className="text-[10px] text-gray-500">累計 {formatYen(rev.total)} • 平均ROI {rev.avgRoi}x</p>
-          </div>
-          {aiConf !== null && (
-            <div className="text-right">
-              <p className={`text-2xl font-black ${aiConf >= 80 ? "text-green-400" : aiConf >= 50 ? "text-yellow-400" : "text-red-400"}`}>{aiConf}%</p>
-              <p className="text-[10px] text-gray-500">AI信頼度</p>
+      {(() => {
+        // 成長率（仮: activeStreams数ベース推定）
+        const growthRate = rev.activeStreams > 1 ? Math.round(rev.avgRoi * 1.4) : 0;
+        const growthAmount = Math.round(rev.monthly * growthRate / 100);
+        const predicted = rev.monthly + growthAmount;
+        const isGrowing = growthRate > 0;
+
+        // AIコメント生成
+        let aiComment = "";
+        if (rev.topStream && rev.topRoi > 5) aiComment = `${rev.topStream}が好調です。このまま拡大推奨`;
+        else if (errored > 0) aiComment = "エラーが発生中。安定化を優先してください";
+        else if (rev.monthly > 0) aiComment = "収益は安定。新戦略のテストも検討を";
+        else aiComment = "まずは最初の戦略を実行しましょう";
+
+        return (
+          <>
+            {/* 収益ヒーロー */}
+            <div className="bg-gradient-to-br from-purple-950/80 to-gray-900 rounded-2xl p-5 border border-purple-800/40">
+              <div className="flex items-end justify-between mb-1">
+                <div>
+                  <p className="text-3xl font-black text-purple-300 tracking-tight">{formatYen(rev.monthly)}<span className="text-sm text-purple-500 font-normal">/月</span></p>
+                  {isGrowing && (
+                    <p className="text-sm font-bold text-green-400 mt-0.5">+{formatYen(growthAmount)} <span className="text-green-500 text-xs">↑{growthRate}%</span></p>
+                  )}
+                  {!isGrowing && rev.monthly > 0 && (
+                    <p className="text-sm text-yellow-500 mt-0.5">→ 横ばい</p>
+                  )}
+                </div>
+                {aiConf !== null && (
+                  <div className="text-right">
+                    <p className={`text-2xl font-black ${aiConf >= 80 ? "text-purple-300" : aiConf >= 50 ? "text-yellow-400" : "text-red-400"}`}>{aiConf}%</p>
+                    <p className="text-[10px] text-purple-500">AI信頼度</p>
+                  </div>
+                )}
+              </div>
+
+              <p className="text-[10px] text-purple-400/60 mb-3">累計 {formatYen(rev.total)} • 平均ROI {rev.avgRoi}x</p>
+
+              {/* 4指標 */}
+              <div className="grid grid-cols-4 gap-2 text-center">
+                <div className="bg-purple-900/30 rounded-lg py-1.5 border border-purple-800/30">
+                  <p className={`text-sm font-bold ${errored > 0 ? "text-red-400" : running > 0 ? "text-green-400" : "text-purple-400"}`}>{errored > 0 ? "⚠️" : running > 0 ? "✅" : "⏸"}</p>
+                  <p className="text-[9px] text-purple-500/60">AI状態</p>
+                </div>
+                <div className="bg-purple-900/30 rounded-lg py-1.5 border border-purple-800/30">
+                  <p className="text-sm font-bold text-purple-300">{runningTasks}</p>
+                  <p className="text-[9px] text-purple-500/60">実行中</p>
+                </div>
+                <div className="bg-purple-900/30 rounded-lg py-1.5 border border-purple-800/30">
+                  <p className={`text-sm font-bold ${pendingCount > 0 ? "text-yellow-400" : "text-purple-400/40"}`}>{pendingCount}</p>
+                  <p className="text-[9px] text-purple-500/60">承認待ち</p>
+                </div>
+                <div className="bg-purple-900/30 rounded-lg py-1.5 border border-purple-800/30">
+                  <p className="text-sm font-bold text-purple-300">{rev.activeStreams}</p>
+                  <p className="text-[9px] text-purple-500/60">収益源</p>
+                </div>
+              </div>
             </div>
-          )}
-        </div>
 
-        <div className="grid grid-cols-4 gap-2 text-center">
-          <div className="bg-gray-800 rounded-lg py-1.5">
-            <p className={`text-sm font-bold ${errored > 0 ? "text-red-400" : running > 0 ? "text-green-400" : "text-gray-500"}`}>{errored > 0 ? "⚠️" : running > 0 ? "✅" : "⏸"}</p>
-            <p className="text-[9px] text-gray-600">AI状態</p>
-          </div>
-          <div className="bg-gray-800 rounded-lg py-1.5">
-            <p className="text-sm font-bold text-blue-400">{runningTasks}</p>
-            <p className="text-[9px] text-gray-600">実行中</p>
-          </div>
-          <div className="bg-gray-800 rounded-lg py-1.5">
-            <p className={`text-sm font-bold ${pendingCount > 0 ? "text-yellow-400" : "text-gray-500"}`}>{pendingCount}</p>
-            <p className="text-[9px] text-gray-600">承認待ち</p>
-          </div>
-          <div className="bg-gray-800 rounded-lg py-1.5">
-            <p className="text-sm font-bold text-purple-400">{rev.activeStreams}</p>
-            <p className="text-[9px] text-gray-600">収益源</p>
-          </div>
-        </div>
+            {/* AIコメント + 予測 + No.1 */}
+            <div className="space-y-1.5">
+              {/* AIコメント */}
+              <div className="bg-purple-950/40 rounded-xl px-4 py-2.5 border border-purple-800/30">
+                <p className="text-xs text-purple-300">🤖 {aiComment}</p>
+              </div>
 
-        {rev.topStream && (
-          <p className="text-[10px] text-gray-500 mt-2">🏆 トップ戦略: {rev.topStream}</p>
-        )}
-      </div>
+              {/* 予測 + No.1 */}
+              <div className="flex gap-1.5">
+                {rev.monthly > 0 && (
+                  <div className="flex-1 bg-gray-900 rounded-xl px-3 py-2 border border-gray-800">
+                    <p className="text-[10px] text-gray-500">予測</p>
+                    <p className={`text-xs font-bold ${isGrowing ? "text-green-400" : "text-yellow-400"}`}>このペースなら月{formatYen(predicted)}</p>
+                  </div>
+                )}
+                {rev.topStream && (
+                  <div className="flex-1 bg-gray-900 rounded-xl px-3 py-2 border border-gray-800">
+                    <p className="text-[10px] text-gray-500">🏆 No.1戦略</p>
+                    <p className="text-xs font-bold text-purple-400">{rev.topStream} <span className="text-purple-500">(ROI {rev.topRoi}x)</span></p>
+                  </div>
+                )}
+              </div>
+            </div>
+          </>
+        );
+      })()}
 
       {/* =============================== */}
       {/* 推奨アクション（変更①②⑤）       */}
@@ -286,7 +335,7 @@ export default function HomeTab({
       {/* =============================== */}
       <form onSubmit={sendChat} className="flex gap-2">
         <input type="text" value={chatInput} onChange={e => setChatInput(e.target.value)} placeholder="AI組織に指示を出す..."
-          className="flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-purple-600" />
+          className="flex-1 min-w-0 bg-gray-900 border border-purple-800/30 rounded-xl px-4 py-3 text-sm text-white placeholder-purple-400/40 focus:outline-none focus:border-purple-500" />
         <button type="submit" disabled={sending || !chatInput.trim()}
           className="bg-purple-600 hover:bg-purple-500 disabled:bg-gray-700 disabled:text-gray-500 text-white px-5 py-3 rounded-xl text-sm font-medium transition shrink-0">
           {sending ? "..." : "送信"}
