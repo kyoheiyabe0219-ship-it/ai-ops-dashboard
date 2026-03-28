@@ -106,6 +106,27 @@ export type Alert = {
   created_at: string;
 };
 
+export type KnowledgeMemory = {
+  id: string;
+  type: "strategy" | "task_pattern" | "failure" | "improvement";
+  content: string;
+  score: number;
+  source_run_id: string | null;
+  tags: string[];
+  access_count: number;
+  created_at: string;
+};
+
+export type DecisionMemory = {
+  id: string;
+  decision_type: string;
+  reason: string;
+  outcome: string;
+  success_flag: boolean | null;
+  source_run_id: string | null;
+  created_at: string;
+};
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";

@@ -1,6 +1,6 @@
 "use client";
 
-import { Agent, Task, AgentRun, ThinkingIteration, Alert } from "@/lib/supabase";
+import { Agent, Task, AgentRun, ThinkingIteration, Alert, KnowledgeMemory, DecisionMemory } from "@/lib/supabase";
 import { useState, useEffect, useCallback } from "react";
 
 const DISPATCHER = "/api";
@@ -91,6 +91,8 @@ export default function MonitorTab({
 }) {
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<{ iterations: ThinkingIteration[] } | null>(null);
+  const [knowledge, setKnowledge] = useState<KnowledgeMemory[]>([]);
+  const [decisions, setDecisions] = useState<DecisionMemory[]>([]);
 
   const loadRunDetail = useCallback(async (runId: string) => {
     if (expandedRun === runId) { setExpandedRun(null); return; }
@@ -100,11 +102,21 @@ export default function MonitorTab({
     setRunDetail({ iterations: data.iterations || [] });
   }, [expandedRun]);
 
-  // 自動リフレッシュ（10秒ごと）
+  // メモリ読み込み + 自動リフレッシュ（10秒ごと）
+  const loadMemory = useCallback(async () => {
+    const [kRes, dRes] = await Promise.all([
+      fetch("/api/memory?type=all&limit=10").then(r => r.json()).catch(() => ({ knowledge: [], decisions: [] })),
+      Promise.resolve(null),
+    ]);
+    if (kRes.knowledge) setKnowledge(kRes.knowledge);
+    if (kRes.decisions) setDecisions(kRes.decisions);
+  }, []);
+
   useEffect(() => {
-    const interval = setInterval(onRefresh, 10000);
+    loadMemory();
+    const interval = setInterval(() => { onRefresh(); loadMemory(); }, 10000);
     return () => clearInterval(interval);
-  }, [onRefresh]);
+  }, [onRefresh, loadMemory]);
 
   // ルートエージェント（parent_idなし or CEO）
   const roots = agents.filter(a => !a.parent_id || a.role === "ceo");
@@ -201,6 +213,49 @@ export default function MonitorTab({
           </div>
         </div>
       )}
+
+      {/* メモリ（AI OSの記憶） */}
+      <div>
+        <p className="text-xs font-semibold text-gray-400 mb-2">🧠 メモリ</p>
+        <div className="grid grid-cols-2 gap-2">
+          {/* 成功戦略 */}
+          <div className="bg-gray-900 rounded-xl p-3 border border-green-900/30">
+            <p className="text-[10px] text-green-400 font-medium mb-1.5">成功戦略</p>
+            {knowledge.filter(k => k.type === "strategy").length === 0 && (
+              <p className="text-[10px] text-gray-600">蓄積なし</p>
+            )}
+            {knowledge.filter(k => k.type === "strategy").slice(0, 3).map(k => (
+              <p key={k.id} className="text-[10px] text-gray-400 truncate mb-0.5">{k.content}</p>
+            ))}
+          </div>
+
+          {/* 失敗パターン */}
+          <div className="bg-gray-900 rounded-xl p-3 border border-red-900/30">
+            <p className="text-[10px] text-red-400 font-medium mb-1.5">失敗パターン</p>
+            {knowledge.filter(k => k.type === "failure").length === 0 && (
+              <p className="text-[10px] text-gray-600">蓄積なし</p>
+            )}
+            {knowledge.filter(k => k.type === "failure").slice(0, 3).map(k => (
+              <p key={k.id} className="text-[10px] text-gray-400 truncate mb-0.5">{k.content}</p>
+            ))}
+          </div>
+        </div>
+
+        {/* 直近の意思決定 */}
+        {decisions.length > 0 && (
+          <div className="mt-2">
+            <p className="text-[10px] text-gray-500 mb-1">直近の判断</p>
+            {decisions.slice(0, 5).map(d => (
+              <div key={d.id} className="flex items-center gap-1.5 text-[10px] mb-0.5">
+                <span className={d.success_flag ? "text-green-500" : d.success_flag === false ? "text-red-500" : "text-gray-600"}>
+                  {d.success_flag ? "✓" : d.success_flag === false ? "✗" : "○"}
+                </span>
+                <span className="text-gray-500 truncate">{d.reason}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }

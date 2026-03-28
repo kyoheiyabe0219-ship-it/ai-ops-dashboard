@@ -1,9 +1,12 @@
 /**
- * 思考ループエンジン
- * Claude: 提案生成 → ChatGPT: 評価 → 動的スコアで改善ループ
+ * 思考ループエンジン (V3 AI OS)
+ *
+ * 記憶参照 → Claude提案 → ChatGPT評価 → 改善ループ → 記憶保存
+ * 循環: 記憶 → 思考 → 判断 → 実行 → 結果 → 記憶
  */
 
 import { SupabaseClient } from "@supabase/supabase-js";
+import { buildMemoryPrompt, learnFromRun, saveDecision } from "./memory-engine";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -150,19 +153,26 @@ async function callChatGPT(prompt: string): Promise<string> {
 // プロンプト生成
 // ============================================================
 
-function buildProposalPrompt(goal: string, prevIteration?: Iteration): string {
-  let prompt = `あなたはAI組織のCEOです。以下の目標を達成する計画を立案してください。\n\n目標: ${goal}\n\n`;
+function buildProposalPrompt(goal: string, memoryContext: string, prevIteration?: Iteration): string {
+  let prompt = `あなたはAI組織のCEO（カーネル）です。過去の学習データを参照し、最適な計画を立案してください。\n\n`;
+
+  // 記憶注入（核心）
+  prompt += memoryContext;
+
+  prompt += `\n目標: ${goal}\n\n`;
 
   if (prevIteration) {
     prompt += `前回の提案:\n${prevIteration.proposal}\n\n`;
     prompt += `評価スコア: ${prevIteration.score}/100\n`;
     prompt += `改善点: ${prevIteration.improvements}\n\n`;
-    prompt += `上記の改善点を踏まえて、より良い計画を提案してください。\n`;
+    prompt += `上記の改善点と過去の記憶を踏まえて、より良い計画を提案してください。\n`;
+    prompt += `特に「避けるべきパターン」に該当しないか確認してください。\n`;
   } else {
-    prompt += `具体的な実行計画を提案してください。\n`;
+    prompt += `過去の成功パターンを参考に、具体的な実行計画を提案してください。\n`;
+    prompt += `失敗パターンは避けてください。\n`;
   }
 
-  prompt += `\n出力は必ずJSON形式で:\n{"summary":"計画の概要","tasks":[{"content":"タスク名","priority":"high|medium|low","expected_value":数値}],"reasoning":"この計画の根拠"}`;
+  prompt += `\n出力は必ずJSON形式で:\n{"summary":"計画の概要","tasks":[{"content":"タスク名","priority":"high|medium|low","expected_value":数値}],"reasoning":"この計画の根拠（過去の記憶をどう活用したか含む）"}`;
   return prompt;
 }
 
@@ -256,7 +266,10 @@ export async function runIteration(
     }
   }
 
-  const proposal = await callClaude(buildProposalPrompt(run.goal, prevIteration));
+  // 記憶参照（AI OS循環の核心）
+  const memoryContext = await buildMemoryPrompt(supabase);
+
+  const proposal = await callClaude(buildProposalPrompt(run.goal, memoryContext, prevIteration));
   const evalRaw = await callChatGPT(buildEvalPrompt(run.goal, proposal));
 
   let score = 0;
@@ -381,9 +394,15 @@ export async function executeApprovedRun(
     }
   }
 
-  await supabase.from("agent_runs").update({
-    status: taskIds.length > 0 ? "executing" : "done",
-  }).eq("id", runId);
+  const finalStatus = taskIds.length > 0 ? "executing" : "done";
+  await supabase.from("agent_runs").update({ status: finalStatus }).eq("id", runId);
+
+  // 記憶化: 実行結果を学習（循環の完成）
+  await saveDecision(supabase, "approve", `Run「${run.title}」を承認・実行`, `${taskIds.length}タスク生成`, true, runId);
+
+  if (finalStatus === "done") {
+    await learnFromRun(supabase, runId);
+  }
 
   return { created: taskIds.length, taskIds };
 }
