@@ -1,6 +1,6 @@
 "use client";
 
-import { Agent, Task, AgentRun, ThinkingIteration, Alert, KnowledgeMemory, DecisionMemory } from "@/lib/supabase";
+import { Agent, Task, AgentRun, ThinkingIteration, Alert, KnowledgeMemory, DecisionMemory, CeoAlgorithm, MetaLog } from "@/lib/supabase";
 import { useState, useEffect, useCallback } from "react";
 
 const DISPATCHER = "/api";
@@ -93,6 +93,9 @@ export default function MonitorTab({
   const [runDetail, setRunDetail] = useState<{ iterations: ThinkingIteration[] } | null>(null);
   const [knowledge, setKnowledge] = useState<KnowledgeMemory[]>([]);
   const [decisions, setDecisions] = useState<DecisionMemory[]>([]);
+  const [algorithm, setAlgorithm] = useState<CeoAlgorithm | null>(null);
+  const [metaLogs, setMetaLogs] = useState<MetaLog[]>([]);
+  const [algoProposal, setAlgoProposal] = useState<{ shouldUpdate: boolean; reason: string; proposed: Partial<CeoAlgorithm> | null } | null>(null);
 
   const loadRunDetail = useCallback(async (runId: string) => {
     if (expandedRun === runId) { setExpandedRun(null); return; }
@@ -104,12 +107,17 @@ export default function MonitorTab({
 
   // メモリ読み込み + 自動リフレッシュ（10秒ごと）
   const loadMemory = useCallback(async () => {
-    const [kRes, dRes] = await Promise.all([
+    const [kRes, algoRes] = await Promise.all([
       fetch("/api/memory?type=all&limit=10").then(r => r.json()).catch(() => ({ knowledge: [], decisions: [] })),
-      Promise.resolve(null),
+      fetch("/api/algorithm").then(r => r.json()).catch(() => null),
     ]);
     if (kRes.knowledge) setKnowledge(kRes.knowledge);
     if (kRes.decisions) setDecisions(kRes.decisions);
+    if (algoRes) {
+      setAlgorithm(algoRes.current || null);
+      setMetaLogs(algoRes.meta_logs || []);
+      setAlgoProposal(algoRes.proposal || null);
+    }
   }, []);
 
   useEffect(() => {
@@ -248,6 +256,79 @@ export default function MonitorTab({
             );
           })}
         </div>
+
+      {/* CEO Brain（V6: 自己改変） */}
+      {algorithm && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 mb-2">🧬 CEO Brain v{algorithm.version}</p>
+          <div className="bg-gray-900 rounded-xl p-3 border border-purple-900/30 space-y-2">
+            {/* スコアリングweights */}
+            <div>
+              <p className="text-[10px] text-gray-500 mb-1">スコア配分</p>
+              <div className="flex gap-1 h-4">
+                <div className="bg-blue-600 rounded-l" style={{ width: `${algorithm.scoring_weights.ai * 100}%` }}>
+                  <span className="text-[8px] text-white px-1">AI {(algorithm.scoring_weights.ai * 100).toFixed(0)}%</span>
+                </div>
+                <div className="bg-green-600" style={{ width: `${algorithm.scoring_weights.memory * 100}%` }}>
+                  <span className="text-[8px] text-white px-1">Mem {(algorithm.scoring_weights.memory * 100).toFixed(0)}%</span>
+                </div>
+                <div className="bg-purple-600 rounded-r" style={{ width: `${algorithm.scoring_weights.decision * 100}%` }}>
+                  <span className="text-[8px] text-white px-1">Dec {(algorithm.scoring_weights.decision * 100).toFixed(0)}%</span>
+                </div>
+              </div>
+            </div>
+
+            {/* Explore */}
+            <div className="flex gap-3 text-[10px] text-gray-500">
+              <span>探索率: {(algorithm.explore_rules.base_rate * 100).toFixed(0)}%</span>
+              <span>停滞時: {(algorithm.explore_rules.stagnation_rate * 100).toFixed(0)}%</span>
+              <span>失敗時: {(algorithm.explore_rules.failure_rate * 100).toFixed(0)}%</span>
+            </div>
+
+            {/* 改善提案 */}
+            {algoProposal?.shouldUpdate && algoProposal.proposed && (
+              <div className="bg-yellow-950/50 border border-yellow-800 rounded-lg p-2 mt-2">
+                <p className="text-[10px] text-yellow-400 font-medium mb-1">⚡ アルゴリズム改善提案</p>
+                <p className="text-[10px] text-gray-400 mb-2">{algoProposal.reason}</p>
+                <div className="flex gap-2">
+                  <button onClick={async () => {
+                    await fetch("/api/algorithm", {
+                      method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "apply", proposed: algoProposal.proposed }),
+                    });
+                    loadMemory();
+                  }}
+                    className="bg-green-800 text-green-200 text-[10px] px-2 py-1 rounded transition hover:bg-green-700">✅ 適用</button>
+                  <button onClick={async () => {
+                    await fetch("/api/algorithm", {
+                      method: "POST", headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ action: "rollback" }),
+                    });
+                    loadMemory();
+                  }}
+                    className="bg-gray-800 text-gray-400 text-[10px] px-2 py-1 rounded transition hover:bg-gray-700">↩ ロールバック</button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* メタログ（自己評価） */}
+      {metaLogs.length > 0 && (
+        <div>
+          <p className="text-[10px] text-gray-500 mb-1">自己評価</p>
+          {metaLogs.slice(0, 3).map(m => (
+            <div key={m.id} className={`flex items-start gap-1.5 text-[10px] mb-1 ${m.outcome === "success" ? "text-green-600" : "text-red-600"}`}>
+              <span>{m.outcome === "success" ? "✓" : "✗"}</span>
+              <div className="flex-1">
+                <span className="text-gray-500">{m.original_decision}</span>
+                {m.improvement_suggestion && <p className="text-gray-600 text-[9px]">→ {m.improvement_suggestion}</p>}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
 
         {/* 判断履歴（V4.5: confidence付き） */}
         {decisions.length > 0 && (

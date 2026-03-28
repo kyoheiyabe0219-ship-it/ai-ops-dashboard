@@ -132,6 +132,29 @@ export type DecisionMemory = {
   created_at: string;
 };
 
+export type CeoAlgorithm = {
+  id: string;
+  version: number;
+  scoring_weights: { ai: number; memory: number; decision: number };
+  explore_rules: { base_rate: number; stagnation_rate: number; failure_rate: number; high_perf_rate: number };
+  decision_rules: { auto_approve_confidence: number; failure_block_weight: number; priority_weight: number };
+  performance: { avg_roi?: number; success_rate?: number };
+  status: string;
+  change_reason: string;
+  created_at: string;
+};
+
+export type MetaLog = {
+  id: string;
+  run_id: string | null;
+  original_decision: string;
+  outcome: string;
+  error_reason: string | null;
+  improvement_suggestion: string | null;
+  applied: boolean;
+  created_at: string;
+};
+
 export type ChatMessage = {
   id: string;
   role: "user" | "assistant" | "system";

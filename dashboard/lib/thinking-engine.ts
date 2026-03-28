@@ -7,6 +7,7 @@
 
 import { SupabaseClient } from "@supabase/supabase-js";
 import { buildMemoryPrompt, learnFromRun, saveDecision, calculateIntegratedScore } from "./memory-engine";
+import { selfEvaluate, getActiveAlgorithm, proposeAlgorithmUpdate } from "./meta-engine";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -402,12 +403,13 @@ export async function executeApprovedRun(
   const finalStatus = taskIds.length > 0 ? "executing" : "done";
   await supabase.from("agent_runs").update({ status: finalStatus }).eq("id", runId);
 
-  // 記憶化: 実行結果を学習（循環の完成）
+  // 記憶化 + 自己評価（V6循環）
   await saveDecision(supabase, "approve", `Run「${run.title}」を承認・実行`, `${taskIds.length}タスク生成`, true, runId);
+  await learnFromRun(supabase, runId);
+  await selfEvaluate(supabase, runId);
 
-  if (finalStatus === "done") {
-    await learnFromRun(supabase, runId);
-  }
+  // アルゴリズム改善提案チェック
+  await proposeAlgorithmUpdate(supabase);
 
   return { created: taskIds.length, taskIds };
 }
