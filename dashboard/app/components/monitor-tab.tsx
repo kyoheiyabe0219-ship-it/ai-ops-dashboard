@@ -89,6 +89,7 @@ export default function MonitorTab({
   alerts: Alert[];
   onRefresh: () => void;
 }) {
+  const [simpleMode, setSimpleMode] = useState(true);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<{ iterations: ThinkingIteration[] } | null>(null);
   const [knowledge, setKnowledge] = useState<KnowledgeMemory[]>([]);
@@ -145,6 +146,15 @@ export default function MonitorTab({
 
   return (
     <div className="space-y-4">
+      {/* モード切替 */}
+      <div className="flex items-center justify-between">
+        <p className="text-xs text-gray-500">{simpleMode ? "シンプル" : "詳細"}モード</p>
+        <button onClick={() => setSimpleMode(!simpleMode)}
+          className="text-[10px] bg-gray-800 text-gray-400 px-2.5 py-1 rounded-lg hover:text-white transition">
+          {simpleMode ? "詳細を表示 →" : "← シンプル"}
+        </button>
+      </div>
+
       {/* ヘッダーサマリー */}
       <div className="flex flex-wrap gap-2 text-xs">
         <span className="bg-gray-900 px-2.5 py-1 rounded-full border border-gray-800">
@@ -161,8 +171,8 @@ export default function MonitorTab({
         </span>
       </div>
 
-      {/* 直近の構造化指示 */}
-      {commands.length > 0 && (
+      {/* 直近の構造化指示（詳細モードのみ） */}
+      {!simpleMode && commands.length > 0 && (
         <div>
           <p className="text-xs font-semibold text-gray-400 mb-2">📝 指示解釈</p>
           {commands.slice(0, 3).map((cmd, i) => (
@@ -285,8 +295,8 @@ export default function MonitorTab({
           })}
         </div>
 
-      {/* Goal Function（V7: 目的関数） */}
-      {goal && (
+      {/* Goal Function（詳細モードのみ） */}
+      {!simpleMode && goal && (
         <div>
           <p className="text-xs font-semibold text-gray-400 mb-2">🎯 目的関数 v{goal.version}</p>
           <div className="bg-gray-900 rounded-xl p-3 border border-blue-900/30 space-y-2">
@@ -323,8 +333,8 @@ export default function MonitorTab({
         </div>
       )}
 
-      {/* CEO Brain（V6: 自己改変） */}
-      {algorithm && (
+      {/* CEO Brain（詳細モードのみ） */}
+      {!simpleMode && algorithm && (
         <div>
           <p className="text-xs font-semibold text-gray-400 mb-2">🧬 CEO Brain v{algorithm.version}</p>
           <div className="bg-gray-900 rounded-xl p-3 border border-purple-900/30 space-y-2">
@@ -380,8 +390,8 @@ export default function MonitorTab({
         </div>
       )}
 
-      {/* メタログ（自己評価） */}
-      {metaLogs.length > 0 && (
+      {/* メタログ（詳細モードのみ） */}
+      {!simpleMode && metaLogs.length > 0 && (
         <div>
           <p className="text-[10px] text-gray-500 mb-1">自己評価</p>
           {metaLogs.slice(0, 3).map(m => (
@@ -396,8 +406,8 @@ export default function MonitorTab({
         </div>
       )}
 
-        {/* 判断履歴（V4.5: confidence付き） */}
-        {decisions.length > 0 && (
+        {/* 判断履歴（詳細モードのみ） */}
+        {!simpleMode && decisions.length > 0 && (
           <div className="mt-3">
             <p className="text-[10px] text-gray-500 mb-1">判断進化</p>
             {decisions.slice(0, 5).map(d => {
