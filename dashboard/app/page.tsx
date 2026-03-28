@@ -358,6 +358,14 @@ function BottomNav({ active, onChange, unreadAlerts }: {
 // チャットセクション（独立コンポーネント）
 // ============================================================
 
+type ExecutionData = {
+  id?: string;
+  intent: string;
+  actions: { api: string; method: string; count: number; status: string; detail?: string; data_count?: number }[];
+  result: Record<string, unknown>;
+  duration_ms: number;
+};
+
 function ChatSection({ messages, setMessages, dispatcherUrl, onTaskCreated }: {
   messages: ChatMessage[];
   setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
@@ -366,7 +374,13 @@ function ChatSection({ messages, setMessages, dispatcherUrl, onTaskCreated }: {
 }) {
   const [chatInput, setChatInput] = useState("");
   const [chatSending, setChatSending] = useState(false);
+  const [executions, setExecutions] = useState<Record<string, ExecutionData>>({});
+  const [expanded, setExpanded] = useState<Record<string, boolean>>({});
   const chatEndRef = { current: null as HTMLDivElement | null };
+
+  function toggleExpand(msgId: string) {
+    setExpanded((prev) => ({ ...prev, [msgId]: !prev[msgId] }));
+  }
 
   async function sendChat(e: FormEvent) {
     e.preventDefault();
@@ -388,8 +402,18 @@ function ChatSection({ messages, setMessages, dispatcherUrl, onTaskCreated }: {
       const data = await res.json();
 
       if (data.ok) {
-        const tempAssistant: ChatMessage = { id: `temp-${Date.now()}-a`, role: "assistant", content: data.response, meta: { command_type: data.command_type }, created_at: new Date().toISOString() };
+        const assistantId = `temp-${Date.now()}-a`;
+        const tempAssistant: ChatMessage = {
+          id: assistantId, role: "assistant", content: data.response,
+          meta: { command_type: data.command_type, execution_id: data.execution?.id },
+          created_at: new Date().toISOString(),
+        };
         setMessages((prev) => [...prev, tempAssistant]);
+
+        if (data.execution) {
+          setExecutions((prev) => ({ ...prev, [assistantId]: data.execution }));
+        }
+
         if (data.command_type === "create_tasks") onTaskCreated();
       }
     } catch {
@@ -403,6 +427,11 @@ function ChatSection({ messages, setMessages, dispatcherUrl, onTaskCreated }: {
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   });
+
+  const intentLabel: Record<string, string> = {
+    create_tasks: "タスク作成", status: "状態確認", errors: "エラー確認",
+    roi_report: "ROIレポート", agent_list: "エージェント一覧", run_decision: "意思決定実行", unknown: "不明",
+  };
 
   return (
     <div className="flex flex-col h-[calc(100vh-12rem)] sm:h-[calc(100vh-8rem)]">
@@ -421,20 +450,97 @@ function ChatSection({ messages, setMessages, dispatcherUrl, onTaskCreated }: {
             </div>
           </div>
         )}
-        {messages.map((msg) => (
-          <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
-            <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 ${
-              msg.role === "user"
-                ? "bg-blue-600 text-white rounded-br-md"
-                : "bg-gray-800 text-gray-200 rounded-bl-md border border-gray-700"
-            }`}>
-              <pre className="text-sm whitespace-pre-wrap font-sans leading-relaxed">{msg.content}</pre>
-              <p className={`text-[10px] mt-1 ${msg.role === "user" ? "text-blue-300" : "text-gray-600"}`}>
-                {new Date(msg.created_at).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}
-              </p>
+        {messages.map((msg) => {
+          const exec = executions[msg.id];
+          const isExpanded = expanded[msg.id];
+          const hasExec = msg.role === "assistant" && (exec || msg.meta?.command_type);
+
+          return (
+            <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+              <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 ${
+                msg.role === "user"
+                  ? "bg-blue-600 text-white rounded-br-md"
+                  : "bg-gray-800 text-gray-200 rounded-bl-md border border-gray-700"
+              }`}>
+                <pre className="text-sm whitespace-pre-wrap font-sans leading-relaxed">{msg.content}</pre>
+
+                <div className="flex items-center gap-2 mt-1">
+                  <span className={`text-[10px] ${msg.role === "user" ? "text-blue-300" : "text-gray-600"}`}>
+                    {new Date(msg.created_at).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}
+                  </span>
+
+                  {hasExec && (
+                    <button
+                      onClick={() => toggleExpand(msg.id)}
+                      className="text-[10px] text-purple-400 hover:text-purple-300 transition"
+                    >
+                      {isExpanded ? "▲ 閉じる" : "▼ 実行詳細"}
+                    </button>
+                  )}
+
+                  {exec && (
+                    <span className="text-[10px] text-gray-600">{exec.duration_ms}ms</span>
+                  )}
+                </div>
+
+                {/* 実行詳細パネル */}
+                {isExpanded && exec && (
+                  <div className="mt-2 pt-2 border-t border-gray-700 space-y-2">
+                    {/* Intent */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-[10px] text-gray-500">Intent:</span>
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-purple-900/50 text-purple-300 font-mono">
+                        {exec.intent}
+                      </span>
+                      <span className="text-[10px] text-gray-600">
+                        ({intentLabel[exec.intent] || exec.intent})
+                      </span>
+                    </div>
+
+                    {/* Actions */}
+                    <div>
+                      <p className="text-[10px] text-gray-500 mb-1">Actions:</p>
+                      <div className="space-y-1">
+                        {exec.actions.map((action, i) => (
+                          <div key={i} className="flex items-center gap-1.5 text-[10px]">
+                            <span className={action.status === "success" ? "text-green-500" : "text-red-500"}>
+                              {action.status === "success" ? "✓" : "✗"}
+                            </span>
+                            <span className="text-gray-500 font-mono">{action.method}</span>
+                            <span className="text-gray-400">{action.api}</span>
+                            {action.count > 1 && <span className="text-gray-600">x{action.count}</span>}
+                            {action.data_count !== undefined && (
+                              <span className="text-blue-400">→ {action.data_count}件</span>
+                            )}
+                            {action.detail && (
+                              <span className="text-gray-600">{action.detail}</span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    {/* Result */}
+                    {Object.keys(exec.result).length > 0 && (
+                      <div>
+                        <p className="text-[10px] text-gray-500 mb-1">Result:</p>
+                        <pre className="text-[10px] text-gray-500 bg-gray-900 rounded p-2 overflow-x-auto font-mono">
+                          {JSON.stringify(exec.result, null, 2)}
+                        </pre>
+                      </div>
+                    )}
+
+                    {/* Duration */}
+                    <div className="flex items-center gap-2 text-[10px] text-gray-600">
+                      <span>処理時間: {exec.duration_ms}ms</span>
+                      {exec.id && <span>ID: {exec.id.substring(0, 8)}...</span>}
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
-          </div>
-        ))}
+          );
+        })}
         {chatSending && (
           <div className="flex justify-start">
             <div className="bg-gray-800 border border-gray-700 rounded-2xl rounded-bl-md px-4 py-3">
