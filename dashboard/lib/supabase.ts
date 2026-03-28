@@ -90,6 +90,11 @@ export type AgentRun = {
   final_plan: Record<string, unknown>;
   parent_run_id: string | null;
   created_by: string;
+  expected_value: number;
+  estimated_cost: number;
+  estimated_roi: number;
+  role: "ceo" | "normal" | "quick";
+  dynamic_target_score: number;
   created_at: string;
   updated_at: string;
 };
@@ -105,6 +110,9 @@ export type ThinkingIteration = {
   eval_model: string;
   improvements: string | null;
   duration_ms: number;
+  estimated_roi: number;
+  dynamic_target_score: number;
+  reached_target: boolean;
   created_at: string;
 };
 

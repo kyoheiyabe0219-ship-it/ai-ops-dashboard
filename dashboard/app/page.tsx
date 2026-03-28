@@ -377,6 +377,9 @@ function RunsSection({ runs, approvals, dispatcherUrl, onUpdate }: {
 }) {
   const [newTitle, setNewTitle] = useState("");
   const [newGoal, setNewGoal] = useState("");
+  const [newValue, setNewValue] = useState("");
+  const [newCost, setNewCost] = useState("");
+  const [newRole, setNewRole] = useState<"ceo" | "normal" | "quick">("normal");
   const [creating, setCreating] = useState(false);
   const [expandedRun, setExpandedRun] = useState<string | null>(null);
   const [runDetail, setRunDetail] = useState<{ iterations: ThinkingIteration[]; tasks: Task[] } | null>(null);
@@ -390,9 +393,14 @@ function RunsSection({ runs, approvals, dispatcherUrl, onUpdate }: {
       await fetch(`${dispatcherUrl}/runs`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: newTitle.trim(), goal: newGoal.trim() }),
+        body: JSON.stringify({
+          title: newTitle.trim(), goal: newGoal.trim(),
+          expected_value: parseInt(newValue) || 0,
+          estimated_cost: parseInt(newCost) || 1,
+          role: newRole,
+        }),
       });
-      setNewTitle(""); setNewGoal("");
+      setNewTitle(""); setNewGoal(""); setNewValue(""); setNewCost("");
       onUpdate();
     } finally { setCreating(false); }
   }
@@ -466,6 +474,25 @@ function RunsSection({ runs, approvals, dispatcherUrl, onUpdate }: {
             {creating ? "..." : "🔄 開始"}
           </button>
         </div>
+        <div className="flex gap-2 items-center">
+          <input type="number" value={newValue} onChange={e => setNewValue(e.target.value)} placeholder="期待価値（円）"
+            className="w-28 bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-purple-600" />
+          <input type="number" value={newCost} onChange={e => setNewCost(e.target.value)} placeholder="コスト（円）"
+            className="w-28 bg-gray-800 border border-gray-700 rounded-lg px-2.5 py-1.5 text-xs text-white placeholder-gray-600 focus:outline-none focus:border-purple-600" />
+          <div className="flex bg-gray-800 rounded-lg overflow-hidden border border-gray-700">
+            {(["quick", "normal", "ceo"] as const).map(r => (
+              <button key={r} type="button" onClick={() => setNewRole(r)}
+                className={`px-2.5 py-1.5 text-[10px] transition ${newRole === r ? "bg-purple-800 text-purple-200" : "text-gray-500"}`}>
+                {r === "ceo" ? "CEO" : r === "quick" ? "Quick" : "Normal"}
+              </button>
+            ))}
+          </div>
+          {(parseInt(newValue) > 0 || parseInt(newCost) > 0) && (
+            <span className="text-[10px] text-purple-400">
+              ROI: {((parseInt(newValue) || 0) / Math.max(parseInt(newCost) || 1, 1)).toFixed(1)}x
+            </span>
+          )}
+        </div>
       </form>
 
       {/* Run一覧 */}
@@ -484,9 +511,11 @@ function RunsSection({ runs, approvals, dispatcherUrl, onUpdate }: {
                   <span className={`text-[10px] px-2 py-0.5 rounded-full ${cfg.bg} ${cfg.color}`}>{cfg.label}</span>
                 </div>
                 <p className="text-xs text-gray-500 truncate">{run.goal}</p>
-                <div className="flex gap-3 mt-2 text-[10px] text-gray-600">
+                <div className="flex flex-wrap gap-x-3 gap-y-1 mt-2 text-[10px] text-gray-600">
                   <span>ループ: {run.current_iteration}/{run.max_iterations}</span>
-                  <span>最高スコア: {run.best_score}点</span>
+                  <span>スコア: {run.best_score}/{run.dynamic_target_score || "?"}点</span>
+                  {run.estimated_roi > 0 && <span className="text-purple-400">ROI: {run.estimated_roi.toFixed(1)}x</span>}
+                  <span className="text-gray-700">{run.role || "normal"}</span>
                   <span>{new Date(run.created_at).toLocaleDateString("ja-JP")}</span>
                 </div>
                 {/* スコアバー */}
@@ -520,12 +549,14 @@ function RunsSection({ runs, approvals, dispatcherUrl, onUpdate }: {
                     <div className="space-y-2">
                       {runDetail.iterations.map(it => (
                         <div key={it.id} className="bg-gray-800 rounded-lg p-3 text-xs">
-                          <div className="flex items-center gap-2 mb-1">
+                          <div className="flex items-center gap-2 mb-1 flex-wrap">
                             <span className="text-gray-500">#{it.iteration}</span>
-                            <span className={`font-bold ${(it.score || 0) >= 80 ? "text-green-400" : (it.score || 0) >= 50 ? "text-yellow-400" : "text-red-400"}`}>
+                            <span className={`font-bold ${it.reached_target ? "text-green-400" : (it.score || 0) >= 50 ? "text-yellow-400" : "text-red-400"}`}>
                               {it.score ?? "?"}点
                             </span>
-                            <span className="text-gray-700">{it.proposal_model} → {it.eval_model}</span>
+                            <span className="text-gray-600">/ {it.dynamic_target_score}点</span>
+                            {it.reached_target && <span className="text-green-500">✓</span>}
+                            {it.estimated_roi > 0 && <span className="text-purple-500">ROI {it.estimated_roi.toFixed(1)}x</span>}
                             <span className="text-gray-700">{it.duration_ms}ms</span>
                           </div>
                           <details className="mt-1">

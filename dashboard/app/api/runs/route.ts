@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
 
   try {
     const supabase = getServiceSupabase();
-    const { title, goal, max_iterations } = await req.json();
+    const { title, goal, max_iterations, expected_value, estimated_cost, role } = await req.json();
 
     if (!title || !goal) return apiError("title and goal are required", 400);
 
@@ -41,6 +41,9 @@ export async function POST(req: NextRequest) {
         title,
         goal,
         max_iterations: max_iterations || 10,
+        expected_value: expected_value || 0,
+        estimated_cost: estimated_cost || 1,
+        role: role || "normal",
         status: "thinking",
       })
       .select()
