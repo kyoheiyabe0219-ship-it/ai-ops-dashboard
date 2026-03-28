@@ -704,79 +704,146 @@ function RunsSection({ runs, approvals, dispatcherUrl, onUpdate }: {
                 </div>
               </button>
 
-              {/* 展開: 詳細 */}
-              {isExpanded && runDetail && (
-                <div className="border-t border-gray-800 p-4 space-y-3">
-                  {/* アクションボタン */}
-                  <div className="flex gap-2">
-                    {run.status === "thinking" && (
-                      <button onClick={() => iterate(run.id)} disabled={iterating === run.id}
-                        className="bg-purple-800 hover:bg-purple-700 disabled:bg-gray-700 text-purple-200 text-xs px-3 py-1.5 rounded-lg transition">
-                        {iterating === run.id ? "思考中..." : "🔄 次のイテレーション"}
-                      </button>
-                    )}
-                    {run.status === "approved" && (
-                      <button onClick={() => executeRun(run.id)}
-                        className="bg-blue-800 hover:bg-blue-700 text-blue-200 text-xs px-3 py-1.5 rounded-lg transition">
-                        ⚡ 実行（Task生成）
-                      </button>
-                    )}
-                  </div>
+              {/* 展開: CEO計画ビュー */}
+              {isExpanded && runDetail && (() => {
+                const plan = run.final_plan as { summary?: string; tasks?: { content: string; priority?: string; expected_value?: number }[]; reasoning?: string } | null;
+                const planTasks = plan?.tasks || [];
+                const approval = approvals.find(a => a.run_id === run.id && a.status === "pending");
+                const canAct = !["done", "failed"].includes(run.status);
 
-                  {/* イテレーション履歴 */}
-                  <div>
-                    <p className="text-xs text-gray-500 mb-2">思考ログ ({runDetail.iterations.length}回)</p>
-                    <div className="space-y-2">
-                      {runDetail.iterations.map(it => (
-                        <div key={it.id} className="bg-gray-800 rounded-lg p-3 text-xs">
-                          <div className="flex items-center gap-2 mb-1 flex-wrap">
-                            <span className="text-gray-500">#{it.iteration}</span>
-                            <span className={`font-bold ${it.reached_target ? "text-green-400" : (it.score || 0) >= 50 ? "text-yellow-400" : "text-red-400"}`}>
-                              {it.score ?? "?"}点
-                            </span>
-                            <span className="text-gray-600">/ {it.dynamic_target_score}点</span>
-                            {it.reached_target && <span className="text-green-500">✓</span>}
-                            {it.effective_score > 0 && <span className="text-emerald-500">実効{it.effective_score.toFixed(1)}</span>}
-                            {it.success_rate > 0 && <span className="text-blue-500">{(it.success_rate * 100).toFixed(0)}%</span>}
-                            <span className="text-gray-700">{it.duration_ms}ms</span>
+                return (
+                  <div className="border-t border-gray-800 p-4 space-y-4">
+                    {/* 役割説明 */}
+                    <div className="flex items-center gap-2 text-[10px] text-gray-600">
+                      <span className="bg-gray-800 px-2 py-0.5 rounded text-purple-400">CEO = 計画</span>
+                      <span>→</span>
+                      <span className="bg-gray-800 px-2 py-0.5 rounded text-blue-400">承認</span>
+                      <span>→</span>
+                      <span className="bg-gray-800 px-2 py-0.5 rounded text-green-400">Worker = 実行</span>
+                    </div>
+
+                    {/* ===== 最終計画（メインコンテンツ） ===== */}
+                    {plan && Object.keys(plan).length > 0 && (
+                      <div className="bg-gray-800 rounded-xl p-4 border border-purple-900/30">
+                        <p className="text-xs font-bold text-purple-400 mb-2">📋 CEOの実行計画</p>
+
+                        {plan.summary && (
+                          <p className="text-sm text-gray-200 mb-3">{plan.summary}</p>
+                        )}
+
+                        {planTasks.length > 0 && (
+                          <div className="space-y-1.5 mb-3">
+                            <p className="text-[10px] text-gray-500">生成予定タスク ({planTasks.length}件)</p>
+                            {planTasks.map((t, i) => (
+                              <div key={i} className="flex items-center gap-2 bg-gray-900 rounded-lg px-3 py-2">
+                                <span className="text-gray-500 text-[10px]">#{i + 1}</span>
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+                                  t.priority === "high" ? "bg-red-900 text-red-300" : t.priority === "low" ? "bg-gray-700 text-gray-400" : "bg-yellow-900 text-yellow-300"
+                                }`}>{(t.priority || "med").toUpperCase()}</span>
+                                <span className="flex-1 text-xs">{t.content}</span>
+                                {(t.expected_value || 0) > 0 && (
+                                  <span className="text-[10px] text-yellow-500">¥{(t.expected_value || 0).toLocaleString()}</span>
+                                )}
+                              </div>
+                            ))}
                           </div>
-                          <details className="mt-1">
-                            <summary className="text-gray-600 cursor-pointer hover:text-gray-400">提案を表示</summary>
-                            <pre className="mt-1 text-gray-400 whitespace-pre-wrap text-[10px] max-h-40 overflow-y-auto">{it.proposal}</pre>
+                        )}
+
+                        {plan.reasoning && (
+                          <details>
+                            <summary className="text-[10px] text-gray-600 cursor-pointer hover:text-gray-400">根拠を表示</summary>
+                            <p className="mt-1 text-[11px] text-gray-400">{plan.reasoning}</p>
                           </details>
-                          {it.improvements && (
-                            <p className="text-yellow-600 mt-1">改善点: {it.improvements}</p>
-                          )}
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+                        )}
+                      </div>
+                    )}
 
-                  {/* 生成されたタスク */}
-                  {runDetail.tasks.length > 0 && (
-                    <div>
-                      <p className="text-xs text-gray-500 mb-2">生成タスク ({runDetail.tasks.length}件)</p>
-                      {runDetail.tasks.map(t => (
-                        <div key={t.id} className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2 text-xs mb-1">
-                          <span>{t.status === "done" ? "✅" : t.status === "running" ? "⚡" : "⏳"}</span>
-                          <span className="flex-1 truncate">{t.content}</span>
-                          <span className="text-gray-600">{t.status}</span>
-                        </div>
-                      ))}
-                    </div>
-                  )}
+                    {/* ===== 操作ボタン（3択） ===== */}
+                    {canAct && (
+                      <div className="flex gap-2 flex-wrap">
+                        {/* 承認して実行 */}
+                        {(run.status === "awaiting_approval" || run.status === "approved") && (
+                          <button onClick={async () => {
+                            if (approval) await respondApproval(approval.id, "approved");
+                            await executeRun(run.id);
+                            loadDetail(run.id);
+                          }}
+                            className="bg-green-800 hover:bg-green-700 text-green-200 text-xs px-4 py-2 rounded-lg transition font-medium">
+                            ✅ 承認して実行（Workerに渡す）
+                          </button>
+                        )}
 
-                  {/* 最終計画 */}
-                  {run.final_plan && Object.keys(run.final_plan).length > 0 && (
+                        {/* 改善させる */}
+                        {(run.status === "awaiting_approval" || run.status === "thinking") && (
+                          <button onClick={async () => {
+                            if (approval) await respondApproval(approval.id, "rejected", "改善が必要");
+                            await iterate(run.id);
+                            loadDetail(run.id);
+                          }} disabled={iterating === run.id}
+                            className="bg-yellow-900 hover:bg-yellow-800 disabled:bg-gray-700 text-yellow-200 text-xs px-4 py-2 rounded-lg transition font-medium">
+                            {iterating === run.id ? "改善中..." : "🔄 改善させる"}
+                          </button>
+                        )}
+
+                        {/* キャンセル */}
+                        <button onClick={async () => {
+                          await fetch(`${dispatcherUrl}/runs/${run.id}/cancel`, { method: "POST" });
+                          onUpdate();
+                        }}
+                          className="bg-gray-800 hover:bg-gray-700 text-gray-400 text-xs px-4 py-2 rounded-lg transition">
+                          ✕ キャンセル
+                        </button>
+                      </div>
+                    )}
+
+                    {/* ===== 実行済みタスク ===== */}
+                    {runDetail.tasks.length > 0 && (
+                      <div>
+                        <p className="text-xs font-semibold text-blue-400 mb-2">⚡ 実行中タスク（Workerが処理）</p>
+                        <div className="space-y-1">
+                          {runDetail.tasks.map(t => (
+                            <div key={t.id} className="flex items-center gap-2 bg-gray-800 rounded-lg px-3 py-2 text-xs">
+                              <span>{t.status === "done" ? "✅" : t.status === "running" ? "⚡" : "⏳"}</span>
+                              <span className="flex-1 truncate">{t.content}</span>
+                              {t.assigned_to && <span className="text-[10px] text-gray-600">→ {t.assigned_to}</span>}
+                              <span className={`text-[10px] ${t.status === "done" ? "text-blue-400" : t.status === "running" ? "text-green-400" : "text-yellow-400"}`}>
+                                {t.status}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* ===== スコア + 思考履歴 ===== */}
                     <details>
-                      <summary className="text-xs text-gray-600 cursor-pointer hover:text-gray-400">最終計画JSON</summary>
-                      <pre className="mt-1 text-[10px] text-gray-500 bg-gray-800 rounded p-2 overflow-x-auto max-h-40">
-                        {JSON.stringify(run.final_plan, null, 2)}
-                      </pre>
+                      <summary className="text-xs text-gray-500 cursor-pointer hover:text-gray-300">
+                        思考履歴 ({runDetail.iterations.length}回, ベスト{run.best_score}点)
+                      </summary>
+                      <div className="mt-2 space-y-2">
+                        {runDetail.iterations.map(it => (
+                          <div key={it.id} className="bg-gray-800 rounded-lg p-3 text-xs">
+                            <div className="flex items-center gap-2 mb-1 flex-wrap">
+                              <span className="text-gray-500">#{it.iteration}</span>
+                              <span className={`font-bold ${it.reached_target ? "text-green-400" : (it.score || 0) >= 50 ? "text-yellow-400" : "text-red-400"}`}>
+                                {it.score ?? "?"}点
+                              </span>
+                              <span className="text-gray-600">/ {it.dynamic_target_score}点</span>
+                              {it.reached_target && <span className="text-green-500">✓</span>}
+                              <span className="text-gray-700">{it.duration_ms}ms</span>
+                            </div>
+                            <details className="mt-1">
+                              <summary className="text-gray-600 cursor-pointer hover:text-gray-400">提案を表示</summary>
+                              <pre className="mt-1 text-gray-400 whitespace-pre-wrap text-[10px] max-h-40 overflow-y-auto">{it.proposal}</pre>
+                            </details>
+                            {it.improvements && <p className="text-yellow-600 mt-1 text-[10px]">改善点: {it.improvements}</p>}
+                          </div>
+                        ))}
+                      </div>
                     </details>
-                  )}
-                </div>
-              )}
+                  </div>
+                );
+              })()}
             </div>
           );
         })}
