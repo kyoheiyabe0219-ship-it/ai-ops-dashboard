@@ -132,6 +132,19 @@ export type DecisionMemory = {
   created_at: string;
 };
 
+export type GoalFunction = {
+  id: string;
+  short_term_weight: number;
+  long_term_weight: number;
+  learning_weight: number;
+  stability_weight: number;
+  risk_weight: number;
+  version: number;
+  status: string;
+  change_reason: string;
+  created_at: string;
+};
+
 export type CeoAlgorithm = {
   id: string;
   version: number;

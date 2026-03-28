@@ -7,7 +7,8 @@
 
 import { SupabaseClient } from "@supabase/supabase-js";
 import { buildMemoryPrompt, learnFromRun, saveDecision, calculateIntegratedScore } from "./memory-engine";
-import { selfEvaluate, getActiveAlgorithm, proposeAlgorithmUpdate } from "./meta-engine";
+import { selfEvaluate, proposeAlgorithmUpdate } from "./meta-engine";
+import { calculateGoalScore, proposeGoalUpdate } from "./goal-engine";
 
 const ANTHROPIC_API_KEY = process.env.ANTHROPIC_API_KEY || "";
 const OPENAI_API_KEY = process.env.OPENAI_API_KEY || "";
@@ -290,10 +291,23 @@ export async function runIteration(
     improvements = "評価結果のパースに失敗";
   }
 
-  // V4.5: スコア統合（AI×0.5 + Memory×0.3 + Decision×0.2）
+  // V4.5: decision_score（AI×0.5 + Memory×0.3 + Decision×0.2）
   const goalKeywords = run.goal.split(/[\s　、。]+/).filter((w: string) => w.length >= 2).slice(0, 5);
   const integrated = await calculateIntegratedScore(supabase, aiScore, goalKeywords);
-  const score = integrated.integrated;
+  const decisionScore = integrated.integrated;
+
+  // V7: goal_score（目的関数評価）
+  const { data: recentFailures } = await supabase.from("agent_runs").select("status").eq("status", "failed").limit(10);
+  const goalBreakdown = await calculateGoalScore(supabase, {
+    expectedRoi: scoring.estimatedRoi,
+    proposalScore: aiScore,
+    isNewStrategy: nextIteration === 1,
+    failureCount: (recentFailures || []).length,
+    iterationCount: nextIteration,
+  });
+
+  // final_score = decision_score × 0.5 + goal_score × 0.5
+  const score = Math.round(decisionScore * 0.5 + goalBreakdown.total * 0.5);
 
   const durationMs = Date.now() - start;
   const reachedTarget = score >= scoring.targetScore;
@@ -408,8 +422,9 @@ export async function executeApprovedRun(
   await learnFromRun(supabase, runId);
   await selfEvaluate(supabase, runId);
 
-  // アルゴリズム改善提案チェック
+  // アルゴリズム + 目的関数 改善提案チェック
   await proposeAlgorithmUpdate(supabase);
+  await proposeGoalUpdate(supabase);
 
   return { created: taskIds.length, taskIds };
 }

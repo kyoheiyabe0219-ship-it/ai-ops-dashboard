@@ -1,6 +1,6 @@
 "use client";
 
-import { Agent, Task, AgentRun, ThinkingIteration, Alert, KnowledgeMemory, DecisionMemory, CeoAlgorithm, MetaLog } from "@/lib/supabase";
+import { Agent, Task, AgentRun, ThinkingIteration, Alert, KnowledgeMemory, DecisionMemory, CeoAlgorithm, MetaLog, GoalFunction } from "@/lib/supabase";
 import { useState, useEffect, useCallback } from "react";
 
 const DISPATCHER = "/api";
@@ -96,6 +96,8 @@ export default function MonitorTab({
   const [algorithm, setAlgorithm] = useState<CeoAlgorithm | null>(null);
   const [metaLogs, setMetaLogs] = useState<MetaLog[]>([]);
   const [algoProposal, setAlgoProposal] = useState<{ shouldUpdate: boolean; reason: string; proposed: Partial<CeoAlgorithm> | null } | null>(null);
+  const [goal, setGoal] = useState<GoalFunction | null>(null);
+  const [goalProposal, setGoalProposal] = useState<{ shouldUpdate: boolean; reason: string; proposed: Partial<GoalFunction> | null } | null>(null);
 
   const loadRunDetail = useCallback(async (runId: string) => {
     if (expandedRun === runId) { setExpandedRun(null); return; }
@@ -107,9 +109,10 @@ export default function MonitorTab({
 
   // メモリ読み込み + 自動リフレッシュ（10秒ごと）
   const loadMemory = useCallback(async () => {
-    const [kRes, algoRes] = await Promise.all([
+    const [kRes, algoRes, goalRes] = await Promise.all([
       fetch("/api/memory?type=all&limit=10").then(r => r.json()).catch(() => ({ knowledge: [], decisions: [] })),
       fetch("/api/algorithm").then(r => r.json()).catch(() => null),
+      fetch("/api/goal").then(r => r.json()).catch(() => null),
     ]);
     if (kRes.knowledge) setKnowledge(kRes.knowledge);
     if (kRes.decisions) setDecisions(kRes.decisions);
@@ -117,6 +120,10 @@ export default function MonitorTab({
       setAlgorithm(algoRes.current || null);
       setMetaLogs(algoRes.meta_logs || []);
       setAlgoProposal(algoRes.proposal || null);
+    }
+    if (goalRes) {
+      setGoal(goalRes.current || null);
+      setGoalProposal(goalRes.proposal || null);
     }
   }, []);
 
@@ -256,6 +263,44 @@ export default function MonitorTab({
             );
           })}
         </div>
+
+      {/* Goal Function（V7: 目的関数） */}
+      {goal && (
+        <div>
+          <p className="text-xs font-semibold text-gray-400 mb-2">🎯 目的関数 v{goal.version}</p>
+          <div className="bg-gray-900 rounded-xl p-3 border border-blue-900/30 space-y-2">
+            <div className="flex gap-1 h-5">
+              {[
+                { label: "短期", w: goal.short_term_weight, color: "bg-orange-500" },
+                { label: "長期", w: goal.long_term_weight, color: "bg-blue-500" },
+                { label: "学習", w: goal.learning_weight, color: "bg-green-500" },
+                { label: "安定", w: goal.stability_weight, color: "bg-gray-500" },
+              ].map(g => (
+                <div key={g.label} className={`${g.color} flex items-center justify-center rounded`} style={{ width: `${g.w * 100}%` }}>
+                  <span className="text-[8px] text-white font-medium">{g.label} {(g.w * 100).toFixed(0)}%</span>
+                </div>
+              ))}
+              <div className="bg-red-500 flex items-center justify-center rounded" style={{ width: `${goal.risk_weight * 100}%` }}>
+                <span className="text-[8px] text-white">-Risk {(goal.risk_weight * 100).toFixed(0)}%</span>
+              </div>
+            </div>
+
+            {goalProposal?.shouldUpdate && goalProposal.proposed && (
+              <div className="bg-blue-950/50 border border-blue-800 rounded-lg p-2">
+                <p className="text-[10px] text-blue-400 font-medium mb-1">🎯 目的関数の進化提案</p>
+                <p className="text-[10px] text-gray-400 mb-1">{goalProposal.reason}</p>
+                <button onClick={async () => {
+                  await fetch("/api/goal", {
+                    method: "POST", headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ proposed: goalProposal.proposed }),
+                  });
+                  loadMemory();
+                }} className="bg-blue-800 text-blue-200 text-[10px] px-2 py-1 rounded hover:bg-blue-700">✅ 適用</button>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* CEO Brain（V6: 自己改変） */}
       {algorithm && (
