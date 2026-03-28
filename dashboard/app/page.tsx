@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, FormEvent, useCallback } from "react";
-import { supabase, Agent, Task, MonetizationLog, Alert, DecisionLog } from "@/lib/supabase";
+import { getSupabase, Agent, Task, MonetizationLog, Alert, DecisionLog } from "@/lib/supabase";
 
 // ============================================================
 // 定数
@@ -359,6 +359,7 @@ function BottomNav({ active, onChange, unreadAlerts }: {
 // ============================================================
 
 export default function Dashboard() {
+  const supabase = getSupabase();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
   const [logs, setLogs] = useState<MonetizationLog[]>([]);
