@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, FormEvent, useCallback } from "react";
-import { getSupabase, Agent, Task, MonetizationLog, Alert, DecisionLog, ChatMessage, AgentRun, ThinkingIteration, ApprovalRequest } from "@/lib/supabase";
+import { getSupabase, Agent, Task, MonetizationLog, Alert, DecisionLog, ChatMessage, AgentRun, ThinkingIteration, ApprovalRequest, AutonomousConfig, AutonomousLog } from "@/lib/supabase";
 
 // ============================================================
 // 定数
@@ -321,7 +321,7 @@ function TaskForm({ onCreated }: { onCreated: () => void }) {
 // 下部ナビ
 // ============================================================
 
-type Section = "dashboard" | "tasks" | "agents" | "revenue" | "alerts" | "analytics" | "decisions" | "chat" | "runs";
+type Section = "dashboard" | "tasks" | "agents" | "revenue" | "alerts" | "analytics" | "decisions" | "chat" | "runs" | "auto";
 
 function BottomNav({ active, onChange, unreadAlerts }: {
   active: Section; onChange: (s: Section) => void; unreadAlerts: number;
@@ -330,6 +330,7 @@ function BottomNav({ active, onChange, unreadAlerts }: {
     { key: "dashboard", icon: "📊", label: "概要" },
     { key: "chat", icon: "💬", label: "Chat" },
     { key: "runs", icon: "🔄", label: "Runs" },
+    { key: "auto", icon: "⚡", label: "自律" },
     { key: "agents", icon: "🤖", label: "Agent" },
     { key: "tasks", icon: "📌", label: "タスク" },
     { key: "alerts", icon: "🔔", label: "通知", badge: unreadAlerts },
@@ -352,6 +353,147 @@ function BottomNav({ active, onChange, unreadAlerts }: {
         ))}
       </div>
     </nav>
+  );
+}
+
+// ============================================================
+// Autonomous セクション（独立コンポーネント）
+// ============================================================
+
+function AutonomousSection({ dispatcherUrl }: { dispatcherUrl: string }) {
+  const [config, setConfig] = useState<AutonomousConfig | null>(null);
+  const [logs, setLogs] = useState<AutonomousLog[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [running, setRunning] = useState(false);
+
+  const load = useCallback(async () => {
+    const res = await fetch(`${dispatcherUrl}/autonomous`);
+    const data = await res.json();
+    setConfig(data.config); setLogs(data.logs || []); setLoading(false);
+  }, [dispatcherUrl]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function toggle() {
+    if (!config) return;
+    await fetch(`${dispatcherUrl}/autonomous`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: !config.enabled }),
+    });
+    load();
+  }
+
+  async function runCycle() {
+    setRunning(true);
+    try {
+      await fetch(`${dispatcherUrl}/autonomous`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: "run_cycle" }),
+      });
+      load();
+    } finally { setRunning(false); }
+  }
+
+  if (loading) return <p className="text-gray-500 text-center py-8 text-sm">読み込み中...</p>;
+
+  const totalRuns = logs.reduce((s, l) => s + (l.runs_created || 0), 0);
+  const totalTasks = logs.reduce((s, l) => s + (l.tasks_generated || 0), 0);
+  const totalApproved = logs.reduce((s, l) => s + (l.auto_approved || 0), 0);
+  const totalSpawned = logs.reduce((s, l) => s + (l.agents_spawned || 0), 0);
+
+  return (
+    <div className="space-y-4">
+      {/* ON/OFF + ステータス */}
+      <div className={`rounded-xl border p-4 ${config?.enabled ? "border-green-800 bg-green-950/30" : "border-gray-800 bg-gray-900"}`}>
+        <div className="flex items-center justify-between mb-3">
+          <div className="flex items-center gap-3">
+            <span className="text-2xl">{config?.enabled ? "⚡" : "⏸️"}</span>
+            <div>
+              <p className="text-sm font-bold">{config?.enabled ? "自律モード ON" : "自律モード OFF"}</p>
+              <p className="text-[10px] text-gray-500">{config?.enabled ? "AIが自動で事業を回しています" : "手動モード — 人間が操作"}</p>
+            </div>
+          </div>
+          <button onClick={toggle}
+            className={`px-4 py-2 rounded-xl text-sm font-medium transition ${config?.enabled ? "bg-red-900 hover:bg-red-800 text-red-200" : "bg-green-800 hover:bg-green-700 text-green-200"}`}>
+            {config?.enabled ? "停止" : "開始"}
+          </button>
+        </div>
+
+        {/* サマリーカード */}
+        <div className="grid grid-cols-4 gap-2">
+          {[
+            { label: "自動Run", value: totalRuns, color: "text-purple-400" },
+            { label: "生成タスク", value: totalTasks, color: "text-blue-400" },
+            { label: "自動承認", value: totalApproved, color: "text-green-400" },
+            { label: "Agent生成", value: totalSpawned, color: "text-yellow-400" },
+          ].map(s => (
+            <div key={s.label} className="bg-gray-800 rounded-lg p-2 text-center">
+              <p className={`text-lg font-bold ${s.color}`}>{s.value}</p>
+              <p className="text-[9px] text-gray-600">{s.label}</p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 手動実行ボタン */}
+      <button onClick={runCycle} disabled={running}
+        className="w-full bg-purple-800 hover:bg-purple-700 disabled:bg-gray-700 text-purple-200 disabled:text-gray-500 py-2.5 rounded-xl text-sm font-medium transition">
+        {running ? "実行中..." : "🔄 手動サイクル実行"}
+      </button>
+
+      {/* ガードレール */}
+      {config && (
+        <div className="bg-gray-900 rounded-xl p-3 border border-gray-800">
+          <p className="text-xs font-semibold text-gray-400 mb-2">安全設定</p>
+          <div className="grid grid-cols-2 gap-2 text-[10px] text-gray-500">
+            <span>並列Run上限: {config.max_parallel_runs}</span>
+            <span>タスク上限: {config.max_total_tasks}</span>
+            <span>生成上限/時: {config.max_auto_gen_per_hour}</span>
+            <span>自動承認: 実効 ≥ {config.auto_approve_min_effective}</span>
+            <span>Agent増殖: 実効 ≥ {config.agent_spawn_threshold}</span>
+            <span>Agent削減: 成功率 {"<"} {(config.agent_kill_threshold * 100).toFixed(0)}%</span>
+          </div>
+        </div>
+      )}
+
+      {/* ログ */}
+      <div>
+        <p className="text-xs text-gray-500 mb-2">実行ログ（直近{logs.length}件）</p>
+        <div className="space-y-2">
+          {logs.length === 0 && <p className="text-gray-600 text-center py-4 text-sm">ログなし</p>}
+          {logs.map(log => (
+            <details key={log.id} className="bg-gray-900 rounded-lg border border-gray-800 overflow-hidden">
+              <summary className="px-3 py-2 cursor-pointer hover:bg-gray-800 transition">
+                <div className="flex items-center gap-2 text-xs">
+                  <span className="text-gray-500">#{log.cycle}</span>
+                  {log.runs_created > 0 && <span className="text-purple-400">+{log.runs_created}Run</span>}
+                  {log.tasks_generated > 0 && <span className="text-blue-400">+{log.tasks_generated}Task</span>}
+                  {log.auto_approved > 0 && <span className="text-green-400">+{log.auto_approved}承認</span>}
+                  {log.agents_spawned > 0 && <span className="text-yellow-400">+{log.agents_spawned}Agent</span>}
+                  {log.agents_killed > 0 && <span className="text-red-400">-{log.agents_killed}Agent</span>}
+                  <span className="flex-1" />
+                  <span className="text-gray-700">{log.duration_ms}ms</span>
+                  <span className="text-gray-700">{new Date(log.created_at).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}</span>
+                </div>
+              </summary>
+              <div className="px-3 pb-2 space-y-1">
+                {(log.actions_taken || []).map((a, i) => (
+                  <div key={i} className="flex items-center gap-1.5 text-[10px]">
+                    <span className={a.status === "ok" ? "text-green-500" : a.status === "error" ? "text-red-500" : "text-gray-600"}>
+                      {a.status === "ok" ? "✓" : a.status === "error" ? "✗" : "○"}
+                    </span>
+                    <span className="text-gray-500">{a.action}</span>
+                    <span className="text-gray-400">{a.detail}</span>
+                  </div>
+                ))}
+              </div>
+            </details>
+          ))}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -1431,11 +1573,12 @@ export default function Dashboard() {
     dashboard: dashboardSection, agents: agentsSection, tasks: tasksSection,
     chat: <ChatSection messages={chatMessages} setMessages={setChatMessages} dispatcherUrl={DISPATCHER_URL} onTaskCreated={loadTasks} />,
     runs: <RunsSection runs={runs} approvals={approvals} dispatcherUrl={DISPATCHER_URL} onUpdate={() => { loadRuns(); loadTasks(); }} />,
+    auto: <AutonomousSection dispatcherUrl={DISPATCHER_URL} />,
     decisions: decisionsSection, alerts: alertsSection, analytics: analyticsSection, revenue: revenueSection,
   };
   const sectionLabels: Record<Section, string> = {
     dashboard: "概要", agents: "エージェント", tasks: "タスク",
-    chat: "Chat", runs: "Runs", decisions: "AI判断", alerts: "アラート", analytics: "分析", revenue: "収益",
+    chat: "Chat", runs: "Runs", auto: "自律モード", decisions: "AI判断", alerts: "アラート", analytics: "分析", revenue: "収益",
   };
 
   return (

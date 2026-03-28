@@ -122,6 +122,34 @@ export type ThinkingIteration = {
   created_at: string;
 };
 
+export type AutonomousConfig = {
+  id: string;
+  enabled: boolean;
+  max_parallel_runs: number;
+  max_total_tasks: number;
+  max_auto_gen_per_hour: number;
+  auto_approve_min_effective: number;
+  auto_approve_min_roi: number;
+  auto_approve_min_success_rate: number;
+  agent_spawn_threshold: number;
+  agent_kill_threshold: number;
+  loop_interval_sec: number;
+  updated_at: string;
+};
+
+export type AutonomousLog = {
+  id: string;
+  cycle: number;
+  actions_taken: { action: string; detail: string; status: string }[];
+  runs_created: number;
+  tasks_generated: number;
+  agents_spawned: number;
+  agents_killed: number;
+  auto_approved: number;
+  duration_ms: number;
+  created_at: string;
+};
+
 export type ApprovalRequest = {
   id: string;
   run_id: string;
