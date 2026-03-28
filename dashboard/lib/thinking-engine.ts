@@ -87,10 +87,14 @@ export function calculateTargetScore(
 
 async function callClaude(prompt: string): Promise<string> {
   if (!ANTHROPIC_API_KEY) {
+    console.warn("[MOCK] ANTHROPIC_API_KEY未設定。実APIを使うにはVercel環境変数に設定してください");
     return JSON.stringify({
-      summary: "[APIキー未設定] テスト提案",
-      tasks: [{ content: "テストタスク", priority: "medium", expected_value: 10000 }],
-      reasoning: "ANTHROPIC_API_KEY が未設定のためテストデータを返しています",
+      summary: "[MOCK] テスト提案 — APIキーを設定すると実際のClaude提案に切り替わります",
+      tasks: [
+        { content: "SEO記事: キーワード調査", priority: "high", expected_value: 30000 },
+        { content: "競合分析レポート作成", priority: "medium", expected_value: 20000 },
+      ],
+      reasoning: "ANTHROPIC_API_KEYが未設定のためモック。Vercel→Settings→Environment Variablesで設定してください",
     });
   }
 
@@ -123,10 +127,13 @@ async function callClaude(prompt: string): Promise<string> {
 
 async function callChatGPT(prompt: string): Promise<string> {
   if (!OPENAI_API_KEY) {
+    console.warn("[MOCK] OPENAI_API_KEY未設定。実APIを使うにはVercel環境変数に設定してください");
+    // モック: 60-90のランダムスコア（固定85ではなく変動させる）
+    const mockScore = 60 + Math.floor(Math.random() * 30);
     return JSON.stringify({
-      score: 85,
-      breakdown: { goal_alignment: 22, feasibility: 20, specificity: 22, roi_potential: 21 },
-      improvements: "OPENAI_API_KEY が未設定のためテストスコアを返しています",
+      score: mockScore,
+      breakdown: { goal_alignment: Math.floor(mockScore * 0.25), feasibility: Math.floor(mockScore * 0.25), specificity: Math.floor(mockScore * 0.25), roi_potential: Math.floor(mockScore * 0.25) },
+      improvements: `[MOCK] スコア${mockScore}点。OPENAI_API_KEYを設定すると実際のGPT-4o評価に切り替わります`,
     });
   }
 
