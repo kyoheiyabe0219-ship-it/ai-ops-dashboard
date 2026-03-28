@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, FormEvent, useCallback } from "react";
-import { getSupabase, Agent, Task, MonetizationLog, Alert, DecisionLog } from "@/lib/supabase";
+import { getSupabase, Agent, Task, MonetizationLog, Alert, DecisionLog, ChatMessage } from "@/lib/supabase";
 
 // ============================================================
 // 定数
@@ -321,16 +321,16 @@ function TaskForm({ onCreated }: { onCreated: () => void }) {
 // 下部ナビ
 // ============================================================
 
-type Section = "dashboard" | "tasks" | "agents" | "revenue" | "alerts" | "analytics" | "decisions";
+type Section = "dashboard" | "tasks" | "agents" | "revenue" | "alerts" | "analytics" | "decisions" | "chat";
 
 function BottomNav({ active, onChange, unreadAlerts }: {
   active: Section; onChange: (s: Section) => void; unreadAlerts: number;
 }) {
   const items: { key: Section; icon: string; label: string; badge?: number }[] = [
     { key: "dashboard", icon: "📊", label: "概要" },
+    { key: "chat", icon: "💬", label: "Chat" },
     { key: "agents", icon: "🤖", label: "Agent" },
     { key: "tasks", icon: "📌", label: "タスク" },
-    { key: "decisions", icon: "🧠", label: "AI判断" },
     { key: "alerts", icon: "🔔", label: "通知", badge: unreadAlerts },
   ];
 
@@ -355,6 +355,122 @@ function BottomNav({ active, onChange, unreadAlerts }: {
 }
 
 // ============================================================
+// チャットセクション（独立コンポーネント）
+// ============================================================
+
+function ChatSection({ messages, setMessages, dispatcherUrl, onTaskCreated }: {
+  messages: ChatMessage[];
+  setMessages: React.Dispatch<React.SetStateAction<ChatMessage[]>>;
+  dispatcherUrl: string;
+  onTaskCreated: () => void;
+}) {
+  const [chatInput, setChatInput] = useState("");
+  const [chatSending, setChatSending] = useState(false);
+  const chatEndRef = { current: null as HTMLDivElement | null };
+
+  async function sendChat(e: FormEvent) {
+    e.preventDefault();
+    if (!chatInput.trim() || chatSending) return;
+
+    const msg = chatInput.trim();
+    setChatInput("");
+    setChatSending(true);
+
+    const tempUser: ChatMessage = { id: `temp-${Date.now()}`, role: "user", content: msg, meta: {}, created_at: new Date().toISOString() };
+    setMessages((prev) => [...prev, tempUser]);
+
+    try {
+      const res = await fetch(`${dispatcherUrl}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg }),
+      });
+      const data = await res.json();
+
+      if (data.ok) {
+        const tempAssistant: ChatMessage = { id: `temp-${Date.now()}-a`, role: "assistant", content: data.response, meta: { command_type: data.command_type }, created_at: new Date().toISOString() };
+        setMessages((prev) => [...prev, tempAssistant]);
+        if (data.command_type === "create_tasks") onTaskCreated();
+      }
+    } catch {
+      const errMsg: ChatMessage = { id: `temp-${Date.now()}-e`, role: "assistant", content: "送信失敗。ネットワークを確認してください。", meta: {}, created_at: new Date().toISOString() };
+      setMessages((prev) => [...prev, errMsg]);
+    } finally {
+      setChatSending(false);
+    }
+  }
+
+  useEffect(() => {
+    chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
+  });
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-12rem)] sm:h-[calc(100vh-8rem)]">
+      <div className="flex-1 overflow-y-auto space-y-3 mb-3">
+        {messages.length === 0 && (
+          <div className="text-center py-12 space-y-3">
+            <p className="text-4xl">💬</p>
+            <p className="text-gray-500 text-sm">AI組織に指示を出しましょう</p>
+            <div className="space-y-1.5 text-[11px] text-gray-600">
+              <p>📌 「ブログ記事を3本作って」</p>
+              <p>📊 「今の状況は？」</p>
+              <p>⚠️ 「問題ある？」</p>
+              <p>💰 「ROIは？」</p>
+              <p>🤖 「エージェント見せて」</p>
+              <p>🧠 「最適化して」</p>
+            </div>
+          </div>
+        )}
+        {messages.map((msg) => (
+          <div key={msg.id} className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}>
+            <div className={`max-w-[85%] rounded-2xl px-4 py-2.5 ${
+              msg.role === "user"
+                ? "bg-blue-600 text-white rounded-br-md"
+                : "bg-gray-800 text-gray-200 rounded-bl-md border border-gray-700"
+            }`}>
+              <pre className="text-sm whitespace-pre-wrap font-sans leading-relaxed">{msg.content}</pre>
+              <p className={`text-[10px] mt-1 ${msg.role === "user" ? "text-blue-300" : "text-gray-600"}`}>
+                {new Date(msg.created_at).toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" })}
+              </p>
+            </div>
+          </div>
+        ))}
+        {chatSending && (
+          <div className="flex justify-start">
+            <div className="bg-gray-800 border border-gray-700 rounded-2xl rounded-bl-md px-4 py-3">
+              <div className="flex gap-1">
+                <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: "0ms" }} />
+                <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: "150ms" }} />
+                <span className="w-2 h-2 bg-gray-500 rounded-full animate-bounce" style={{ animationDelay: "300ms" }} />
+              </div>
+            </div>
+          </div>
+        )}
+        <div ref={(el) => { chatEndRef.current = el; }} />
+      </div>
+
+      <form onSubmit={sendChat} className="flex gap-2 shrink-0">
+        <input
+          type="text"
+          value={chatInput}
+          onChange={(e) => setChatInput(e.target.value)}
+          placeholder="指示を入力..."
+          disabled={chatSending}
+          className="flex-1 min-w-0 bg-gray-800 border border-gray-700 rounded-xl px-4 py-3 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-600 disabled:opacity-50"
+        />
+        <button
+          type="submit"
+          disabled={chatSending || !chatInput.trim()}
+          className="bg-blue-600 hover:bg-blue-500 active:bg-blue-700 disabled:bg-gray-700 disabled:text-gray-500 text-white px-5 py-3 rounded-xl text-sm font-medium transition shrink-0"
+        >
+          {chatSending ? "..." : "送信"}
+        </button>
+      </form>
+    </div>
+  );
+}
+
+// ============================================================
 // メイン
 // ============================================================
 
@@ -365,6 +481,7 @@ export default function Dashboard() {
   const [logs, setLogs] = useState<MonetizationLog[]>([]);
   const [alerts, setAlerts] = useState<Alert[]>([]);
   const [decisions, setDecisions] = useState<DecisionLog[]>([]);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [section, setSection] = useState<Section>("dashboard");
   const [taskTab, setTaskTab] = useState<"all" | "pending" | "running" | "done">("all");
   const [sortBy, setSortBy] = useState<"created" | "roi">("created");
@@ -386,6 +503,10 @@ export default function Dashboard() {
     supabase.from("decision_logs").select("*").order("created_at", { ascending: false }).limit(50).then(({ data }) => { if (data) setDecisions(data as DecisionLog[]); });
   }, []);
 
+  const loadChat = useCallback(() => {
+    supabase.from("chat_messages").select("*").order("created_at", { ascending: true }).limit(100).then(({ data }) => { if (data) setChatMessages(data as ChatMessage[]); });
+  }, []);
+
   async function markRead(id: string) {
     await fetch(`${DISPATCHER_URL}/alerts/${id}/read`, { method: "PATCH" });
     setAlerts((prev) => prev.map((a) => a.id === id ? { ...a, is_read: true } : a));
@@ -398,7 +519,7 @@ export default function Dashboard() {
 
   useEffect(() => {
     supabase.from("agents").select("*").order("updated_at", { ascending: false }).then(({ data }) => { if (data) setAgents(data as Agent[]); });
-    loadTasks(); loadLogs(); loadAlerts(); loadDecisions();
+    loadTasks(); loadLogs(); loadAlerts(); loadDecisions(); loadChat();
 
     const agentCh = supabase.channel("agents-rt").on("postgres_changes", { event: "*", schema: "public", table: "agents" }, (p) => {
       setAgents((prev) => {
@@ -432,8 +553,12 @@ export default function Dashboard() {
       setDecisions((prev) => [p.new as DecisionLog, ...prev]);
     }).subscribe();
 
-    return () => { supabase.removeChannel(agentCh); supabase.removeChannel(taskCh); supabase.removeChannel(logCh); supabase.removeChannel(alertCh); supabase.removeChannel(decisionCh); };
-  }, [loadTasks, loadLogs, loadAlerts, loadDecisions]);
+    const chatCh = supabase.channel("chat-rt").on("postgres_changes", { event: "INSERT", schema: "public", table: "chat_messages" }, (p) => {
+      setChatMessages((prev) => [...prev, p.new as ChatMessage]);
+    }).subscribe();
+
+    return () => { supabase.removeChannel(agentCh); supabase.removeChannel(taskCh); supabase.removeChannel(logCh); supabase.removeChannel(alertCh); supabase.removeChannel(decisionCh); supabase.removeChannel(chatCh); };
+  }, [loadTasks, loadLogs, loadAlerts, loadDecisions, loadChat]);
 
   // 集計
   const runningAgents = agents.filter((a) => a.status === "running").length;
@@ -471,6 +596,7 @@ export default function Dashboard() {
   // ============================================================
   const navItems: { key: Section; icon: string; label: string }[] = [
     { key: "dashboard", icon: "📊", label: "概要" },
+    { key: "chat", icon: "💬", label: "Chat" },
     { key: "agents", icon: "🤖", label: "エージェント" },
     { key: "tasks", icon: "📌", label: "タスク" },
     { key: "decisions", icon: "🧠", label: "AI判断" },
@@ -934,11 +1060,12 @@ export default function Dashboard() {
   // ============================================================
   const sections: Record<Section, React.ReactNode> = {
     dashboard: dashboardSection, agents: agentsSection, tasks: tasksSection,
+    chat: <ChatSection messages={chatMessages} setMessages={setChatMessages} dispatcherUrl={DISPATCHER_URL} onTaskCreated={loadTasks} />,
     decisions: decisionsSection, alerts: alertsSection, analytics: analyticsSection, revenue: revenueSection,
   };
   const sectionLabels: Record<Section, string> = {
     dashboard: "概要", agents: "エージェント", tasks: "タスク",
-    decisions: "AI判断", alerts: "アラート", analytics: "分析", revenue: "収益",
+    chat: "Chat", decisions: "AI判断", alerts: "アラート", analytics: "分析", revenue: "収益",
   };
 
   return (

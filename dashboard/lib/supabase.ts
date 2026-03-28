@@ -70,3 +70,11 @@ export type DecisionLog = {
   meta: Record<string, unknown>;
   created_at: string;
 };
+
+export type ChatMessage = {
+  id: string;
+  role: "user" | "assistant" | "system";
+  content: string;
+  meta: Record<string, unknown>;
+  created_at: string;
+};
