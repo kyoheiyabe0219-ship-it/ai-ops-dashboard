@@ -106,15 +106,7 @@ export async function POST(req: NextRequest) {
               try {
                 const execResult = await executeApprovedRun(supabase, newRun.id);
                 tasksCreated = execResult.created;
-                actions.push({ api: "execute_run", method: "POST", count: 1, status: "success", detail: `${execResult.created}タスク生成` });
-
-                // 生成されたタスクをエージェントに割当
-                for (const tid of execResult.taskIds) {
-                  const { data: idle } = await supabase.from("agents").select("id").eq("status", "idle").limit(1);
-                  if (idle?.[0]) {
-                    await supabase.from("tasks").update({ assigned_to: idle[0].id, status: "pending" }).eq("id", tid);
-                  }
-                }
+                actions.push({ api: "execute_run", method: "POST", count: 1, status: "success", detail: `${execResult.created}タスク生成, ${execResult.assigned}件割当済` });
               } catch (execErr) {
                 actions.push({ api: "execute_run", method: "POST", count: 1, status: "failed", detail: execErr instanceof Error ? execErr.message : "error" });
               }

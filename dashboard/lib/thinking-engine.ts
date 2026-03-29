@@ -399,10 +399,46 @@ export async function runIteration(
 // 承認後: Task生成
 // ============================================================
 
+/**
+ * タスク内容からWorkerを選択
+ * リサーチ系 → MGR2配下、コンテンツ系 → MGR1配下
+ */
+async function assignToWorker(supabase: SupabaseClient, taskId: string, content: string): Promise<string | null> {
+  const isResearch = /調査|分析|リサーチ|競合|データ|research/i.test(content);
+  const preferParent = isResearch ? "MGR2" : "MGR1";
+
+  // 1. 適切なManagerの配下のidle Workerを探す
+  const { data: preferred } = await supabase.from("agents").select("id").eq("role", "worker").eq("parent_id", preferParent).eq("status", "idle").limit(1);
+  if (preferred?.[0]) {
+    await supabase.from("tasks").update({ assigned_to: preferred[0].id, status: "running" }).eq("id", taskId);
+    await supabase.from("agents").update({ status: "running", task: content.substring(0, 30), progress: 0 }).eq("id", preferred[0].id);
+    return preferred[0].id;
+  }
+
+  // 2. 全idle Workerから探す（CEO除外）
+  const { data: anyWorker } = await supabase.from("agents").select("id").eq("role", "worker").eq("status", "idle").limit(1);
+  if (anyWorker?.[0]) {
+    await supabase.from("tasks").update({ assigned_to: anyWorker[0].id, status: "running" }).eq("id", taskId);
+    await supabase.from("agents").update({ status: "running", task: content.substring(0, 30), progress: 0 }).eq("id", anyWorker[0].id);
+    return anyWorker[0].id;
+  }
+
+  // 3. idle Managerに割当（CEO除外）
+  const { data: mgr } = await supabase.from("agents").select("id").eq("role", "manager").eq("status", "idle").limit(1);
+  if (mgr?.[0]) {
+    await supabase.from("tasks").update({ assigned_to: mgr[0].id, status: "running" }).eq("id", taskId);
+    await supabase.from("agents").update({ status: "running", task: content.substring(0, 30), progress: 0 }).eq("id", mgr[0].id);
+    return mgr[0].id;
+  }
+
+  // 4. 全員busy → pendingのまま
+  return null;
+}
+
 export async function executeApprovedRun(
   supabase: SupabaseClient,
   runId: string
-): Promise<{ created: number; taskIds: string[] }> {
+): Promise<{ created: number; taskIds: string[]; assigned: number }> {
   const { data: run } = await supabase
     .from("agent_runs")
     .select("*")
@@ -415,10 +451,11 @@ export async function executeApprovedRun(
   await supabase.from("agent_runs").update({ status: "executing" }).eq("id", runId);
 
   const plan = run.final_plan as { tasks?: { content: string; priority?: string; expected_value?: number }[] };
-  const tasks = plan?.tasks || [];
+  const planTasks = plan?.tasks || [];
   const taskIds: string[] = [];
+  let assignedCount = 0;
 
-  for (const t of tasks) {
+  for (const t of planTasks) {
     const { data: inserted } = await supabase
       .from("tasks")
       .insert({
@@ -434,10 +471,9 @@ export async function executeApprovedRun(
 
     if (inserted) {
       taskIds.push(inserted.id);
-      const { data: idle } = await supabase.from("agents").select("id").eq("status", "idle").limit(1);
-      if (idle?.[0]) {
-        await supabase.from("tasks").update({ assigned_to: idle[0].id }).eq("id", inserted.id);
-      }
+      // CEO除外でWorkerに割当 + running遷移
+      const assigned = await assignToWorker(supabase, inserted.id, t.content);
+      if (assigned) assignedCount++;
     }
   }
 
@@ -453,5 +489,5 @@ export async function executeApprovedRun(
   await proposeAlgorithmUpdate(supabase);
   await proposeGoalUpdate(supabase);
 
-  return { created: taskIds.length, taskIds };
+  return { created: taskIds.length, taskIds, assigned: assignedCount };
 }
