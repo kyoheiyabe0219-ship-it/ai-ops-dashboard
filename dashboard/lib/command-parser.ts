@@ -67,7 +67,21 @@ function extractTaskContent(text: string): string {
 export function parseCommand(input: string): ParsedCommand {
   const text = input.trim();
 
-  // ① create_run（戦略・計画系） — 最優先
+  // ⓪ create_tasks（直接実行系）— 最最優先
+  // 「タスクを○件実行して」「○つ実行」「今すぐ実行」は直接タスク生成
+  if (/タスク.*(実行|作|やっ)|(\d+)\s*[つ件個].*(実行|やっ|作)|今すぐ実行/i.test(text)) {
+    const count = extractCount(text);
+    const priority = extractPriority(text);
+    const value = extractValue(text);
+    const content = extractTaskContent(text);
+    const tasks = Array.from({ length: count }, (_, i) => ({
+      content: count > 1 ? `${content} #${i + 1}` : content,
+      priority, expected_value: value, cost: 0,
+    }));
+    return { type: "create_tasks", tasks };
+  }
+
+  // ① create_run（戦略・計画系）
   if (/戦略|プラン|計画|考えて|設計|方針|どうやる|立案|構想|企画|ロードマップ|roadmap|strategy|plan/i.test(text)) {
     return {
       type: "create_run",

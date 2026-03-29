@@ -104,6 +104,7 @@ export default function HomeTab({
   const [chatInput, setChatInput] = useState("");
   const [chatResponse, setChatResponse] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
+  const [lastResult, setLastResult] = useState<{ input: string; intent: string; taskCount: number; runId: string | null; status: string; error: string | null } | null>(null);
   const [rev, setRev] = useState<RevData>({ monthly: 0, total: 0, avgRoi: 0, activeStreams: 0, topStream: "", topRoi: 0, hasRealData: false });
 
   // 先に計算（loadRevで使用）
@@ -132,29 +133,35 @@ export default function HomeTab({
     e.preventDefault();
     if (!chatInput.trim() || sending) return;
     const msg = chatInput.trim();
-    setSending(true); setChatResponse(null); setChatInput("");
+    setSending(true); setChatResponse(null); setChatInput(""); setLastResult(null);
     try {
       const res = await fetch(`${API}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ message: msg }),
-        cache: "no-store",
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg }), cache: "no-store",
       });
       if (!res.ok) {
-        setChatResponse(`エラー: ${res.status}`);
+        setLastResult({ input: msg, intent: "error", taskCount: 0, runId: null, status: `HTTP ${res.status}`, error: `送信失敗 (${res.status})` });
         return;
       }
       const data = await res.json();
+      const exec = data.execution || {};
+      const result = exec.result || {};
+
       setChatResponse(data.response || "処理完了");
-      console.log("[sync] chat POST success, refreshing...");
-      // POST成功後に必ずDB再取得
+      setLastResult({
+        input: msg,
+        intent: data.command_type || "unknown",
+        taskCount: result.tasks_created || result.task_ids?.length || (data.command_type === "create_tasks" ? (exec.actions?.find((a: { api: string; detail?: string }) => a.api === "tasks.insert")?.detail || "0").match(/\d+/)?.[0] : 0) || 0,
+        runId: result.run_id ? String(result.run_id).substring(0, 8) : null,
+        status: result.status || (data.command_type === "create_tasks" ? "created" : data.command_type === "status" ? "reported" : "processing"),
+        error: null,
+      });
+
       await onRefresh();
       await loadRev();
-      console.log("[sync] refresh done");
-      // 3秒後にフォールバック再取得（モバイル遅延対策）
-      setTimeout(() => { onRefresh(); }, 3000);
+      setTimeout(onRefresh, 3000);
     } catch {
-      setChatResponse("ネットワークエラー。再試行してください");
+      setLastResult({ input: msg, intent: "error", taskCount: 0, runId: null, status: "failed", error: "ネットワークエラー" });
     } finally {
       setSending(false);
     }
@@ -375,7 +382,70 @@ export default function HomeTab({
         </button>
       </form>
 
-      {chatResponse && (
+      {/* 実行結果カード（修正1,2,5,7,8,10） */}
+      {lastResult && (
+        <div className={`rounded-xl p-4 border ${lastResult.error ? "bg-red-950/30 border-red-800/50" : "bg-purple-950/30 border-purple-800/40"}`}>
+          {/* 指示 + 解析結果 */}
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-[10px] text-gray-500">指示:</span>
+            <span className="text-xs text-gray-300 truncate flex-1">{lastResult.input}</span>
+          </div>
+
+          <div className="flex flex-wrap gap-2 mb-2">
+            <span className={`text-[10px] px-1.5 py-0.5 rounded font-mono ${lastResult.error ? "bg-red-900 text-red-300" : "bg-purple-900/50 text-purple-300"}`}>
+              {lastResult.intent}
+            </span>
+            {lastResult.taskCount > 0 && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-green-900/50 text-green-300">
+                Task {lastResult.taskCount}件
+              </span>
+            )}
+            {lastResult.runId && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/50 text-blue-300">
+                Run {lastResult.runId}
+              </span>
+            )}
+            <span className={`text-[10px] px-1.5 py-0.5 rounded ${
+              lastResult.status === "executing" || lastResult.status === "running" || lastResult.status === "created" ? "bg-green-900/50 text-green-300" :
+              lastResult.status === "thinking" ? "bg-purple-900/50 text-purple-300" :
+              lastResult.status === "awaiting_approval" ? "bg-yellow-900/50 text-yellow-300" :
+              lastResult.error ? "bg-red-900/50 text-red-300" :
+              "bg-gray-800 text-gray-400"
+            }`}>
+              {lastResult.status}
+            </span>
+          </div>
+
+          {/* エラー表示 */}
+          {lastResult.error && (
+            <p className="text-xs text-red-400 mb-2">{lastResult.error}</p>
+          )}
+
+          {/* AIレスポンス */}
+          {chatResponse && (
+            <pre className="text-xs whitespace-pre-wrap font-sans text-gray-300 leading-relaxed mb-2 max-h-32 overflow-y-auto">{chatResponse}</pre>
+          )}
+
+          {/* 状態別ガイド + ナビ */}
+          <div className="flex gap-2 text-[10px]">
+            {(lastResult.taskCount > 0 || lastResult.intent === "create_tasks") && (
+              <span className="text-green-400">→ Tasksタブで確認</span>
+            )}
+            {lastResult.status === "thinking" && (
+              <span className="text-purple-400">→ 思考ループ進行中。Monitorで確認</span>
+            )}
+            {lastResult.status === "awaiting_approval" && (
+              <span className="text-yellow-400">→ 上の承認カードから実行</span>
+            )}
+            {lastResult.intent === "status" && (
+              <span className="text-gray-400">→ 状態レポート完了</span>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* レスポンスのみ（lastResult無しのfallback） */}
+      {!lastResult && chatResponse && (
         <div className="bg-gray-800 border border-gray-700 rounded-xl p-4">
           <pre className="text-sm whitespace-pre-wrap font-sans text-gray-200 leading-relaxed">{chatResponse}</pre>
         </div>

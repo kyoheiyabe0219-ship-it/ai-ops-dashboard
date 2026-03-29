@@ -2,7 +2,7 @@ import { NextRequest } from "next/server";
 import { getServiceSupabase } from "@/lib/supabase-server";
 import { checkRateLimit, rateLimitResponse, apiResponse, apiError, handleOptions } from "@/lib/api-utils";
 import { parseCommand, generateResponse } from "@/lib/command-parser";
-import { runIteration, executeApprovedRun } from "@/lib/thinking-engine";
+import { runIteration, executeApprovedRun, assignToWorker } from "@/lib/thinking-engine";
 import { createAndDeploy } from "@/lib/leverage-engine";
 import { parseInstruction } from "@/lib/instruction-parser";
 
@@ -246,21 +246,24 @@ export async function POST(req: NextRequest) {
       // ============================================================
       case "create_tasks": {
         let created = 0;
+        let assigned = 0;
         const taskIds: string[] = [];
         for (const task of command.tasks) {
           const { data: inserted, error } = await supabase.from("tasks").insert({ content: task.content, priority: task.priority, status: "pending", expected_value: task.expected_value, cost: task.cost }).select("id").single();
           if (!error && inserted) {
             created++; taskIds.push(inserted.id);
-            const { data: idle } = await supabase.from("agents").select("id").eq("status", "idle").limit(1);
-            if (idle?.[0]) {
-              await supabase.from("tasks").update({ assigned_to: idle[0].id }).eq("id", inserted.id);
-              actions.push({ api: "tasks.update(assign)", method: "PATCH", count: 1, status: "success", detail: `→ ${idle[0].id}` });
+            // CEO除外でWorkerに割当
+            const ag = await assignToWorker(supabase, inserted.id, task.content);
+            if (ag) {
+              assigned++;
+              actions.push({ api: "assign_worker", method: "PATCH", count: 1, status: "success", detail: `→ ${ag}` });
             }
           }
         }
-        actions.unshift({ api: "tasks.insert", method: "POST", count: created, status: created > 0 ? "success" : "failed", detail: `${created}/${command.tasks.length}件` });
+        actions.unshift({ api: "tasks.insert", method: "POST", count: created, status: created > 0 ? "success" : "failed", detail: `${created}/${command.tasks.length}件, ${assigned}件割当` });
         context.createdTasks = created;
         resultData.task_ids = taskIds;
+        resultData.tasks_created = created;
         break;
       }
 

@@ -403,7 +403,7 @@ export async function runIteration(
  * タスク内容からWorkerを選択
  * リサーチ系 → MGR2配下、コンテンツ系 → MGR1配下
  */
-async function assignToWorker(supabase: SupabaseClient, taskId: string, content: string): Promise<string | null> {
+export async function assignToWorker(supabase: SupabaseClient, taskId: string, content: string): Promise<string | null> {
   const isResearch = /調査|分析|リサーチ|競合|データ|research/i.test(content);
   const preferParent = isResearch ? "MGR2" : "MGR1";
 
