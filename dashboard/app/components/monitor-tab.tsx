@@ -137,12 +137,8 @@ export default function MonitorTab({
     return () => clearInterval(interval);
   }, [onRefresh, loadMemory]);
 
-  // ルートエージェント（parent_idなし or CEO）
   const roots = agents.filter(a => !a.parent_id || a.role === "ceo");
   const orphans = agents.filter(a => a.parent_id && !agents.find(p => p.id === a.parent_id));
-
-  // アクティブRun
-  const activeRuns = runs.filter(r => ["thinking", "awaiting_approval", "executing"].includes(r.status));
 
   return (
     <div className="space-y-4">
@@ -167,7 +163,7 @@ export default function MonitorTab({
           📌 {tasks.filter(t => t.status === "running").length} 実行中
         </span>
         <span className="bg-gray-900 px-2.5 py-1 rounded-full border border-purple-900 text-purple-400">
-          🔄 {activeRuns.length} Run
+          🔄 {runs.filter(r => ["thinking", "executing", "awaiting_approval"].includes(r.status)).length} Run
         </span>
       </div>
 
@@ -203,62 +199,86 @@ export default function MonitorTab({
         ))}
       </div>
 
-      {/* アクティブRun（実行ログ） */}
-      {activeRuns.length > 0 && (
-        <div>
-          <p className="text-xs font-semibold text-gray-400 mb-2">思考ループ</p>
-          <div className="space-y-2">
-            {activeRuns.map(run => {
-              const isExpanded = expandedRun === run.id;
-              const statusCfg: Record<string, { icon: string; color: string }> = {
-                thinking: { icon: "🔄", color: "text-purple-400" },
-                awaiting_approval: { icon: "⏳", color: "text-yellow-400" },
-                executing: { icon: "⚡", color: "text-blue-400" },
-              };
-              const cfg = statusCfg[run.status] || { icon: "🔄", color: "text-gray-400" };
-
-              return (
-                <div key={run.id} className="bg-gray-900 rounded-xl border border-gray-800 overflow-hidden">
-                  <button onClick={() => loadRunDetail(run.id)} className="w-full text-left p-3">
-                    <div className="flex items-center gap-2">
-                      <span>{cfg.icon}</span>
-                      <span className="text-sm font-medium flex-1 truncate">{run.title}</span>
-                      <span className={`text-[10px] ${cfg.color}`}>{run.status}</span>
-                    </div>
-                    <div className="flex gap-3 mt-1 text-[10px] text-gray-600">
-                      <span>#{run.current_iteration}/{run.max_iterations}</span>
-                      <span>ベスト: {run.best_score}点</span>
-                      <span>目標: {run.dynamic_target_score}点</span>
-                    </div>
-                    <div className="w-full bg-gray-800 rounded-full h-1 mt-1.5">
-                      <div className="h-1 rounded-full bg-purple-500 transition-all" style={{ width: `${run.best_score}%` }} />
-                    </div>
-                  </button>
-
-                  {isExpanded && runDetail && (
-                    <div className="border-t border-gray-800 p-3 space-y-2">
-                      {runDetail.iterations.map(it => (
-                        <div key={it.id} className="bg-gray-800 rounded-lg p-2 text-xs">
-                          <div className="flex items-center gap-2">
-                            <span className="text-gray-500">#{it.iteration}</span>
-                            <span className={`font-bold ${it.reached_target ? "text-green-400" : (it.score || 0) >= 50 ? "text-yellow-400" : "text-red-400"}`}>
-                              {it.score ?? "?"}点
-                            </span>
-                            <span className="text-gray-600">/ {it.dynamic_target_score}点</span>
-                            {it.reached_target && <span className="text-green-500">✓</span>}
-                            <span className="text-gray-700">{it.duration_ms}ms</span>
-                          </div>
-                          {it.improvements && <p className="text-yellow-600 mt-1 text-[10px]">{it.improvements}</p>}
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
+      {/* 思考ループ制御パネル */}
+      <div>
+        <div className="flex items-center justify-between mb-2">
+          <p className="text-xs font-semibold text-gray-400">思考ループ ({runs.length})</p>
+          {runs.length > 0 && (
+            <div className="flex gap-1">
+              <button onClick={async () => { await fetch("/api/runs/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "stop_all_thinking" }) }); onRefresh(); }}
+                className="text-[9px] bg-gray-800 text-gray-500 px-2 py-0.5 rounded hover:text-red-400 transition">全停止</button>
+              <button onClick={async () => { await fetch("/api/runs/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "delete_stopped" }) }); onRefresh(); }}
+                className="text-[9px] bg-gray-800 text-gray-500 px-2 py-0.5 rounded hover:text-red-400 transition">停止済削除</button>
+              <button onClick={async () => { await fetch("/api/runs/bulk", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "cleanup" }) }); onRefresh(); }}
+                className="text-[9px] bg-gray-800 text-gray-500 px-2 py-0.5 rounded hover:text-purple-400 transition">🧹</button>
+            </div>
+          )}
         </div>
-      )}
+
+        <div className="space-y-1.5">
+          {runs.length === 0 && <p className="text-gray-600 text-center py-3 text-sm">Runなし</p>}
+          {[...runs].sort((a, b) => {
+            const order: Record<string, number> = { executing: 0, awaiting_approval: 1, thinking: 2, approved: 3, done: 4, failed: 5, rejected: 6 };
+            return (order[a.status] ?? 9) - (order[b.status] ?? 9);
+          }).map(run => {
+            const cfg: Record<string, { icon: string; color: string; border: string }> = {
+              executing: { icon: "⚡", color: "text-green-400", border: "border-green-800/50" },
+              awaiting_approval: { icon: "⏳", color: "text-yellow-400", border: "border-yellow-800/50" },
+              thinking: { icon: "🔄", color: "text-purple-400", border: "border-purple-800/50" },
+              done: { icon: "🔵", color: "text-blue-400", border: "border-gray-800" },
+              failed: { icon: "🛑", color: "text-gray-500", border: "border-gray-800/50" },
+              rejected: { icon: "✕", color: "text-gray-500", border: "border-gray-800/50" },
+            };
+            const c = cfg[run.status] || { icon: "?", color: "text-gray-500", border: "border-gray-800" };
+            const stopped = ["failed", "rejected"].includes(run.status);
+            const canStop = ["thinking", "awaiting_approval"].includes(run.status);
+            const canDelete = stopped || run.status === "done";
+            const isExp = expandedRun === run.id;
+
+            return (
+              <div key={run.id} className={`rounded-xl border overflow-hidden ${c.border} ${stopped ? "opacity-40" : ""} bg-gray-900`}>
+                <div className="flex items-center p-2.5 gap-2">
+                  <button onClick={() => loadRunDetail(run.id)} className="flex items-center gap-2 flex-1 min-w-0 text-left">
+                    <span>{c.icon}</span>
+                    <span className={`text-xs font-medium flex-1 truncate ${stopped ? "line-through text-gray-600" : ""}`}>{run.title}</span>
+                    <span className={`text-[9px] ${c.color}`}>{run.status}</span>
+                    <span className="text-[9px] text-gray-600">{run.best_score}pt</span>
+                  </button>
+                  <div className="flex gap-1 shrink-0">
+                    {canStop && (
+                      <button onClick={async () => { await fetch(`/api/runs/${run.id}/cancel`, { method: "POST" }); onRefresh(); }}
+                        className="text-[9px] bg-gray-800 text-gray-500 px-1.5 py-0.5 rounded hover:text-red-400 transition" title="停止">🛑</button>
+                    )}
+                    {canDelete && (
+                      <button onClick={async () => { await fetch(`/api/runs/${run.id}/delete`, { method: "POST" }); onRefresh(); }}
+                        className="text-[9px] bg-gray-800 text-gray-500 px-1.5 py-0.5 rounded hover:text-red-400 transition" title="削除">🗑</button>
+                    )}
+                  </div>
+                </div>
+                {!stopped && (
+                  <div className="px-2.5 pb-1.5">
+                    <div className="w-full bg-gray-800 rounded-full h-1">
+                      <div className={`h-1 rounded-full transition-all ${run.status === "executing" ? "bg-green-500" : "bg-purple-500"}`} style={{ width: `${run.best_score}%` }} />
+                    </div>
+                  </div>
+                )}
+                {isExp && runDetail && (
+                  <div className="border-t border-gray-800 p-2.5 space-y-1">
+                    {runDetail.iterations.map(it => (
+                      <div key={it.id} className="flex items-center gap-2 text-[10px] bg-gray-800 rounded px-2 py-1">
+                        <span className="text-gray-500">#{it.iteration}</span>
+                        <span className={`font-bold ${it.reached_target ? "text-green-400" : (it.score || 0) >= 50 ? "text-yellow-400" : "text-red-400"}`}>{it.score ?? "?"}pt</span>
+                        <span className="text-gray-700">/{it.dynamic_target_score}</span>
+                        {it.reached_target && <span className="text-green-500">✓</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
 
       {/* メモリ（V4: 進化型） */}
       <div>
