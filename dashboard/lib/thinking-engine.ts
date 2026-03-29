@@ -456,7 +456,7 @@ export async function executeApprovedRun(
   let assignedCount = 0;
 
   for (const t of planTasks) {
-    const { data: inserted } = await supabase
+    const { data: inserted, error: insertErr } = await supabase
       .from("tasks")
       .insert({
         content: t.content,
@@ -469,11 +469,21 @@ export async function executeApprovedRun(
       .select("id")
       .single();
 
+    if (insertErr) {
+      console.error(`[executeRun] Task INSERT failed: ${insertErr.message} content="${t.content}"`);
+      continue;
+    }
+
     if (inserted) {
       taskIds.push(inserted.id);
-      // CEO除外でWorkerに割当 + running遷移
+      console.log(`[executeRun] Task created: ${inserted.id} "${t.content}"`);
       const assigned = await assignToWorker(supabase, inserted.id, t.content);
-      if (assigned) assignedCount++;
+      if (assigned) {
+        assignedCount++;
+        console.log(`[executeRun] Assigned to ${assigned} → running`);
+      } else {
+        console.log(`[executeRun] No idle worker for "${t.content}" → pending`);
+      }
     }
   }
 
