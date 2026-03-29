@@ -30,13 +30,15 @@ export default function TasksTab({
     if (!content.trim()) return;
     setSending(true);
     try {
-      await fetch(`${DISPATCHER}/task`, {
+      const res = await fetch(`${DISPATCHER}/task`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: content.trim(), priority }),
+        cache: "no-store",
       });
-      setContent("");
-      onRefresh();
+      if (res.ok) setContent("");
+      // 必ずDB再取得
+      await onRefresh();
     } finally { setSending(false); }
   }
 

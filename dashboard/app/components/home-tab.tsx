@@ -131,12 +131,29 @@ export default function HomeTab({
   async function sendChat(e: FormEvent) {
     e.preventDefault();
     if (!chatInput.trim() || sending) return;
-    setSending(true); setChatResponse(null);
+    const msg = chatInput.trim();
+    setSending(true); setChatResponse(null); setChatInput("");
     try {
-      const res = await fetch(`${API}/chat`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ message: chatInput.trim() }) });
+      const res = await fetch(`${API}/chat`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: msg }),
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        setChatResponse(`エラー: ${res.status}`);
+        return;
+      }
       const data = await res.json();
-      setChatResponse(data.response || "エラー"); setChatInput(""); onRefresh(); loadRev();
-    } finally { setSending(false); }
+      setChatResponse(data.response || "処理完了");
+      // POST成功後に必ずDB再取得（optimistic UIではなくDB正）
+      await onRefresh();
+      await loadRev();
+    } catch {
+      setChatResponse("ネットワークエラー。再試行してください");
+    } finally {
+      setSending(false);
+    }
   }
 
   async function handleApprove(approvalId: string, runId?: string) {
