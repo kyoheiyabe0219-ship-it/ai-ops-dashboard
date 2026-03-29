@@ -92,7 +92,7 @@ function generateActions(runs: AgentRun[], approvals: ApprovalRequest[], alerts:
 // メイン
 // ============================================================
 
-type RevData = { monthly: number; total: number; avgRoi: number; activeStreams: number; topStream: string; topRoi: number };
+type RevData = { monthly: number; total: number; avgRoi: number; activeStreams: number; topStream: string; topRoi: number; hasRealData: boolean };
 
 export default function HomeTab({
   agents, tasks, runs, approvals, alerts, onRefresh,
@@ -104,22 +104,28 @@ export default function HomeTab({
   const [chatInput, setChatInput] = useState("");
   const [chatResponse, setChatResponse] = useState<string | null>(null);
   const [sending, setSending] = useState(false);
-  const [rev, setRev] = useState<RevData>({ monthly: 0, total: 0, avgRoi: 0, activeStreams: 0, topStream: "", topRoi: 0 });
+  const [rev, setRev] = useState<RevData>({ monthly: 0, total: 0, avgRoi: 0, activeStreams: 0, topStream: "", topRoi: 0, hasRealData: false });
+
+  // 先に計算（loadRevで使用）
+  const doneTasks = tasks.filter(t => t.status === "done");
 
   const loadRev = useCallback(async () => {
     const res = await fetch(`${API}/revenue`).then(r => r.json()).catch(() => null);
     if (res?.summary) {
       const top = (res.streams || []).find((s: { status: string }) => s.status === "active");
+      // 実データ判定: monetization_logsに実レコードがあるか（シードデータ除外）
+      const realRevenue = doneTasks.filter(t => (t.actual_value || 0) > 0).length > 0;
       setRev({
-        monthly: res.summary.monthly_revenue || 0,
-        total: res.summary.total_revenue || 0,
-        avgRoi: res.summary.avg_roi || 0,
+        monthly: realRevenue ? (res.summary.monthly_revenue || 0) : 0,
+        total: realRevenue ? (res.summary.total_revenue || 0) : 0,
+        avgRoi: realRevenue ? (res.summary.avg_roi || 0) : 0,
         activeStreams: res.summary.active_streams || 0,
         topStream: top?.name || "",
         topRoi: top?.roi || 0,
+        hasRealData: realRevenue,
       });
     }
-  }, []);
+  }, [doneTasks]);
   useEffect(() => { loadRev(); }, [loadRev]);
 
   async function sendChat(e: FormEvent) {
@@ -149,10 +155,8 @@ export default function HomeTab({
     onRefresh();
   }
 
-  // 計算
   const errored = agents.filter(a => a.status === "error").length;
   const running = agents.filter(a => a.status === "running").length;
-  const doneTasks = tasks.filter(t => t.status === "done");
   const totalTasks = tasks.length;
   const aiConf = totalTasks >= 3 ? Math.round(doneTasks.length / totalTasks * 100) : null;
   const actions = generateActions(runs, approvals, alerts, tasks);
@@ -168,94 +172,59 @@ export default function HomeTab({
       {/* ヒーロー: 収益 + 成長 + 予測      */}
       {/* =============================== */}
       {(() => {
-        const growthRate = rev.activeStreams > 1 ? Math.round(rev.avgRoi * 1.4) : 0;
-        const growthAmount = Math.round(rev.monthly * growthRate / 100);
-        const predicted = rev.monthly + growthAmount;
-        const isGrowing = growthRate > 5;
-        const isDecline = growthRate < -5;
-        const statusEmoji = isGrowing ? "🔥" : isDecline ? "⚠️" : "⚖️";
-        const statusLabel = isGrowing ? "成長中" : isDecline ? "悪化中" : rev.monthly > 0 ? "停滞中" : "開始前";
-        const statusColor = isGrowing ? "text-green-400" : isDecline ? "text-red-400" : "text-yellow-400";
-
-        // AIコメント生成
+        // AIコメント（事実ベースのみ）
         let aiComment = "";
-        if (rev.topStream && rev.topRoi > 5) aiComment = `${rev.topStream}が好調です。このまま拡大推奨`;
-        else if (errored > 0) aiComment = "エラーが発生中。安定化を優先してください";
-        else if (rev.monthly > 0) aiComment = "収益は安定。新戦略のテストも検討を";
-        else aiComment = "まずは最初の戦略を実行しましょう";
+        if (errored > 0) aiComment = `${errored}件のエラーが発生中。Monitorで確認してください`;
+        else if (doneTasks.length > 0) aiComment = `完了タスク ${doneTasks.length}件。${runs.filter(r => r.status === "thinking").length > 0 ? "思考ループが進行中" : "新しい指示を出しましょう"}`;
+        else if (runs.length > 0) aiComment = `${runs.length}件のRunが進行中。結果を待っています`;
+        else aiComment = "まだデータがありません。指示を出して開始しましょう";
 
         return (
           <>
-            {/* 収益ヒーロー */}
             <div className="bg-gradient-to-br from-purple-950/80 to-gray-900 rounded-2xl p-5 border border-purple-800/40">
               <div className="flex items-end justify-between mb-1">
                 <div>
-                  <p className="text-3xl font-black text-purple-300 tracking-tight">{formatYen(rev.monthly)}<span className="text-sm text-purple-500 font-normal">/月</span></p>
-                  {isGrowing && (
-                    <p className="text-sm font-bold text-green-400 mt-0.5">+{formatYen(growthAmount)} <span className="text-green-500 text-xs">↑{growthRate}%</span></p>
+                  {rev.hasRealData ? (
+                    <p className="text-3xl font-black text-purple-300 tracking-tight">{formatYen(rev.monthly)}<span className="text-sm text-purple-500 font-normal">/月</span></p>
+                  ) : (
+                    <p className="text-lg font-bold text-purple-400/60">収益データなし</p>
                   )}
-                  {!isGrowing && rev.monthly > 0 && (
-                    <p className="text-sm text-yellow-500 mt-0.5">→ 横ばい</p>
+                  {rev.hasRealData && rev.total > 0 && (
+                    <p className="text-[10px] text-purple-400/60 mt-0.5">累計 {formatYen(rev.total)}</p>
                   )}
                 </div>
                 {aiConf !== null && (
                   <div className="text-right">
                     <p className={`text-2xl font-black ${aiConf >= 80 ? "text-purple-300" : aiConf >= 50 ? "text-yellow-400" : "text-red-400"}`}>{aiConf}%</p>
-                    <p className="text-[10px] text-purple-500">AI信頼度</p>
+                    <p className="text-[10px] text-purple-500">成功率</p>
                   </div>
                 )}
               </div>
 
-              <div className="flex items-center gap-2 mb-3">
-                <p className="text-[10px] text-purple-400/60">累計 {formatYen(rev.total)} • 平均ROI {rev.avgRoi}x</p>
-                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isGrowing ? "bg-green-900/50 text-green-400" : isDecline ? "bg-red-900/50 text-red-400" : "bg-yellow-900/40 text-yellow-400"}`}>
-                  {statusEmoji} {statusLabel}
-                </span>
-              </div>
-
-              {/* 4指標 */}
-              <div className="grid grid-cols-4 gap-2 text-center">
+              {/* 実データのみの4指標 */}
+              <div className="grid grid-cols-4 gap-2 text-center mt-3">
                 <div className="bg-purple-900/30 rounded-lg py-1.5 border border-purple-800/30">
                   <p className={`text-sm font-bold ${errored > 0 ? "text-red-400" : running > 0 ? "text-green-400" : "text-purple-400"}`}>{errored > 0 ? "⚠️" : running > 0 ? "✅" : "⏸"}</p>
                   <p className="text-[9px] text-purple-500/60">AI状態</p>
                 </div>
                 <div className="bg-purple-900/30 rounded-lg py-1.5 border border-purple-800/30">
-                  <p className="text-sm font-bold text-purple-300">{runningTasks}</p>
-                  <p className="text-[9px] text-purple-500/60">実行中</p>
+                  <p className="text-sm font-bold text-purple-300">{doneTasks.length}</p>
+                  <p className="text-[9px] text-purple-500/60">完了</p>
                 </div>
                 <div className="bg-purple-900/30 rounded-lg py-1.5 border border-purple-800/30">
                   <p className={`text-sm font-bold ${pendingCount > 0 ? "text-yellow-400" : "text-purple-400/40"}`}>{pendingCount}</p>
                   <p className="text-[9px] text-purple-500/60">承認待ち</p>
                 </div>
                 <div className="bg-purple-900/30 rounded-lg py-1.5 border border-purple-800/30">
-                  <p className="text-sm font-bold text-purple-300">{rev.activeStreams}</p>
-                  <p className="text-[9px] text-purple-500/60">収益源</p>
+                  <p className="text-sm font-bold text-purple-300">{runs.filter(r => r.status === "thinking").length}</p>
+                  <p className="text-[9px] text-purple-500/60">思考中</p>
                 </div>
               </div>
             </div>
 
-            {/* AIコメント + 予測 + No.1 */}
-            <div className="space-y-1.5">
-              {/* AIコメント */}
-              <div className="bg-purple-950/40 rounded-xl px-4 py-2.5 border border-purple-800/30">
-                <p className="text-xs text-purple-300">🤖 {aiComment}</p>
-              </div>
-
-              {/* 予測 + No.1 */}
-              <div className="flex gap-1.5">
-                {rev.monthly > 0 && (
-                  <div className="flex-1 bg-gray-900 rounded-xl px-3 py-2 border border-gray-800">
-                    <p className="text-[10px] text-gray-500">予測</p>
-                    <p className={`text-xs font-bold ${isGrowing ? "text-green-400" : "text-yellow-400"}`}>このペースなら月{formatYen(predicted)}</p>
-                  </div>
-                )}
-                {rev.topStream && (
-                  <div className="flex-1 bg-gray-900 rounded-xl px-3 py-2 border border-gray-800">
-                    <p className="text-[10px] text-gray-500">🏆 No.1戦略</p>
-                    <p className="text-xs font-bold text-purple-400">{rev.topStream} <span className="text-purple-500">(ROI {rev.topRoi}x)</span></p>
-                  </div>
-                )}
-              </div>
+            {/* AIコメント（事実ベース） */}
+            <div className="bg-purple-950/40 rounded-xl px-4 py-2.5 border border-purple-800/30">
+              <p className="text-xs text-purple-300">🤖 {aiComment}</p>
             </div>
           </>
         );
@@ -265,14 +234,14 @@ export default function HomeTab({
       {/* ワンタップ行動（追加①）           */}
       {/* =============================== */}
       <div className="grid grid-cols-3 gap-2">
-        {rev.avgRoi > 3 && (
+        {rev.hasRealData && rev.avgRoi > 3 && (
           <button onClick={() => { setChatInput("成功パターンを横展開して"); }}
             className="bg-green-900/40 hover:bg-green-900/60 border border-green-700/40 rounded-xl py-3 text-center transition">
             <p className="text-lg">🚀</p>
             <p className="text-[10px] font-bold text-green-400">拡大する</p>
           </button>
         )}
-        {!rev.avgRoi || rev.avgRoi <= 3 ? (
+        {!rev.hasRealData || !rev.avgRoi || rev.avgRoi <= 3 ? (
           <button onClick={() => { setChatInput("新しい収益戦略をテストして"); }}
             className="bg-purple-900/40 hover:bg-purple-900/60 border border-purple-700/40 rounded-xl py-3 text-center transition">
             <p className="text-lg">🧪</p>
@@ -329,8 +298,8 @@ export default function HomeTab({
                     <div className="mt-2 ml-8 space-y-2">
                       <div className="flex gap-2">
                         <div className="bg-gray-900 rounded-lg px-3 py-1.5 text-center flex-1">
-                          <p className="text-xs font-bold text-green-400">{formatYen(expectedRev)}</p>
-                          <p className="text-[8px] text-gray-600">期待収益</p>
+                          <p className="text-xs font-bold text-purple-300">{(plan.tasks || []).length}件</p>
+                          <p className="text-[8px] text-gray-600">タスク数</p>
                         </div>
                         <div className="bg-gray-900 rounded-lg px-3 py-1.5 text-center flex-1">
                           <p className="text-xs font-bold text-blue-400">{run?.best_score || 0}点</p>
