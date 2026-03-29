@@ -146,9 +146,13 @@ export default function HomeTab({
       }
       const data = await res.json();
       setChatResponse(data.response || "処理完了");
-      // POST成功後に必ずDB再取得（optimistic UIではなくDB正）
+      console.log("[sync] chat POST success, refreshing...");
+      // POST成功後に必ずDB再取得
       await onRefresh();
       await loadRev();
+      console.log("[sync] refresh done");
+      // 3秒後にフォールバック再取得（モバイル遅延対策）
+      setTimeout(() => { onRefresh(); }, 3000);
     } catch {
       setChatResponse("ネットワークエラー。再試行してください");
     } finally {
@@ -157,19 +161,22 @@ export default function HomeTab({
   }
 
   async function handleApprove(approvalId: string, runId?: string) {
-    await fetch(`${API}/approvals/${approvalId}/respond`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "approved" }) });
-    if (runId) await fetch(`${API}/runs/${runId}/execute`, { method: "POST" });
-    onRefresh();
+    await fetch(`${API}/approvals/${approvalId}/respond`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "approved" }), cache: "no-store" });
+    if (runId) await fetch(`${API}/runs/${runId}/execute`, { method: "POST", cache: "no-store" });
+    await onRefresh();
+    setTimeout(onRefresh, 3000);
   }
 
   async function handleReject(approvalId: string) {
-    await fetch(`${API}/approvals/${approvalId}/respond`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "rejected" }) });
-    onRefresh();
+    await fetch(`${API}/approvals/${approvalId}/respond`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ action: "rejected" }), cache: "no-store" });
+    await onRefresh();
+    setTimeout(onRefresh, 3000);
   }
 
   async function handleIterate(runId: string) {
-    await fetch(`${API}/runs/${runId}/iterate`, { method: "POST" });
-    onRefresh();
+    await fetch(`${API}/runs/${runId}/iterate`, { method: "POST", cache: "no-store" });
+    await onRefresh();
+    setTimeout(onRefresh, 3000);
   }
 
   const errored = agents.filter(a => a.status === "error").length;

@@ -32,6 +32,7 @@ export default function App() {
   const [alerts, setAlerts] = useState<Alert[]>([]);
 
   const loadAll = useCallback(async () => {
+    console.log("[sync] loadAll start");
     try {
       const [a, t, r, ap, al] = await Promise.all([
         apiFetch("/api/agents"),
@@ -45,8 +46,9 @@ export default function App() {
       if (Array.isArray(r)) setRuns(r);
       if (Array.isArray(ap)) setApprovals(ap);
       if (Array.isArray(al)) setAlerts(al);
-    } catch {
-      // ネットワークエラー時はリトライ
+      console.log(`[sync] loadAll done: agents=${Array.isArray(a) ? a.length : 0} tasks=${Array.isArray(t) ? t.length : 0} runs=${Array.isArray(r) ? r.length : 0}`);
+    } catch (err) {
+      console.error("[sync] loadAll failed, retry in 3s", err);
       setTimeout(loadAll, 3000);
     }
   }, []);
