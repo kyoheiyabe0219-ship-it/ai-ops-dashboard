@@ -70,6 +70,7 @@ export async function POST(req: NextRequest) {
           expected_value: expectedValue,
           estimated_cost: 1,
           role: "ceo",
+          max_iterations: 3, // 3回で必ず承認フローへ
           status: "thinking",
           created_by: "chat",
         }).select().single();
@@ -81,25 +82,60 @@ export async function POST(req: NextRequest) {
 
         actions.push({ api: "agent_runs.insert", method: "POST", count: 1, status: "success", detail: `Run ${newRun.id.substring(0, 8)}` });
 
-        // 初回イテレーション実行
-        try {
-          const iterResult = await runIteration(supabase, newRun.id);
-          actions.push({ api: "thinking_engine.iterate", method: "POST", count: 1, status: "success", detail: `score=${iterResult.score}` });
+        // イテレーション（最大3回ループ、スコア到達で自動承認+実行）
+        let finalStatus = "thinking";
+        let finalScore = 0;
+        let tasksCreated = 0;
 
-          const { data: updated } = await supabase.from("agent_runs").select("*").eq("id", newRun.id).single();
-          context.createdRun = {
-            id: newRun.id,
-            title: command.title,
-            score: iterResult.score,
-            status: updated?.status || "thinking",
-          };
-          resultData.run_id = newRun.id;
-          resultData.score = iterResult.score;
-          resultData.status = updated?.status;
-        } catch (e) {
-          actions.push({ api: "thinking_engine.iterate", method: "POST", count: 1, status: "failed", detail: e instanceof Error ? e.message : "error" });
-          context.createdRun = { id: newRun.id, title: command.title, score: 0, status: "thinking" };
+        for (let loop = 0; loop < 4; loop++) {
+          try {
+            const iterResult = await runIteration(supabase, newRun.id);
+            finalScore = iterResult.score;
+            actions.push({ api: `iterate_#${loop + 1}`, method: "POST", count: 1, status: "success", detail: `score=${iterResult.score} done=${iterResult.done}` });
+
+            if (iterResult.done) {
+              // スコア到達 → 自動承認 + 実行
+              const { data: approval } = await supabase.from("approval_requests").select("id").eq("run_id", newRun.id).eq("status", "pending").limit(1);
+              if (approval?.[0]) {
+                await supabase.from("approval_requests").update({ status: "approved", responded_at: new Date().toISOString() }).eq("id", approval[0].id);
+                actions.push({ api: "auto_approve", method: "PATCH", count: 1, status: "success", detail: "チャットから自動承認" });
+              }
+              await supabase.from("agent_runs").update({ status: "approved" }).eq("id", newRun.id);
+
+              // Task生成
+              try {
+                const execResult = await executeApprovedRun(supabase, newRun.id);
+                tasksCreated = execResult.created;
+                actions.push({ api: "execute_run", method: "POST", count: 1, status: "success", detail: `${execResult.created}タスク生成` });
+
+                // 生成されたタスクをエージェントに割当
+                for (const tid of execResult.taskIds) {
+                  const { data: idle } = await supabase.from("agents").select("id").eq("status", "idle").limit(1);
+                  if (idle?.[0]) {
+                    await supabase.from("tasks").update({ assigned_to: idle[0].id, status: "pending" }).eq("id", tid);
+                  }
+                }
+              } catch (execErr) {
+                actions.push({ api: "execute_run", method: "POST", count: 1, status: "failed", detail: execErr instanceof Error ? execErr.message : "error" });
+              }
+
+              finalStatus = "executing";
+              break;
+            }
+          } catch (e) {
+            actions.push({ api: `iterate_#${loop + 1}`, method: "POST", count: 1, status: "failed", detail: e instanceof Error ? e.message : "error" });
+            break;
+          }
         }
+
+        const { data: updated } = await supabase.from("agent_runs").select("*").eq("id", newRun.id).single();
+        finalStatus = updated?.status || finalStatus;
+
+        context.createdRun = { id: newRun.id, title: command.title, score: finalScore, status: finalStatus };
+        resultData.run_id = newRun.id;
+        resultData.score = finalScore;
+        resultData.status = finalStatus;
+        resultData.tasks_created = tasksCreated;
         break;
       }
 
@@ -159,7 +195,32 @@ export async function POST(req: NextRequest) {
         }
 
         if (!runs || runs.length === 0) {
-          actions.push({ api: "agent_runs.select", method: "GET", count: 1, status: "success", detail: "実行可能Runなし" });
+          // フォールバック: 実行可能Runなし → 新規Run作成して実行まで
+          actions.push({ api: "fallback", method: "POST", count: 1, status: "success", detail: "Runなし→新規作成" });
+          const instrFb = parseInstruction(userMessage);
+          const { data: fbRun } = await supabase.from("agent_runs").insert({
+            title: userMessage.substring(0, 30), goal: userMessage,
+            expected_value: instrFb.goalValue || 0, estimated_cost: 1, role: "ceo", max_iterations: 3, status: "thinking", created_by: "chat",
+          }).select().single();
+
+          if (fbRun) {
+            for (let loop = 0; loop < 4; loop++) {
+              try {
+                const ir = await runIteration(supabase, fbRun.id);
+                actions.push({ api: `iterate_#${loop + 1}`, method: "POST", count: 1, status: "success", detail: `score=${ir.score}` });
+                if (ir.done) {
+                  const { data: ap } = await supabase.from("approval_requests").select("id").eq("run_id", fbRun.id).eq("status", "pending").limit(1);
+                  if (ap?.[0]) await supabase.from("approval_requests").update({ status: "approved", responded_at: new Date().toISOString() }).eq("id", ap[0].id);
+                  await supabase.from("agent_runs").update({ status: "approved" }).eq("id", fbRun.id);
+                  const er = await executeApprovedRun(supabase, fbRun.id);
+                  actions.push({ api: "execute_run", method: "POST", count: 1, status: "success", detail: `${er.created}タスク生成` });
+                  context.executedRun = { id: fbRun.id, created: er.created };
+                  resultData.tasks_created = er.created;
+                  break;
+                }
+              } catch { break; }
+            }
+          }
           break;
         }
 

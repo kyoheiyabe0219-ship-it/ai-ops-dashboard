@@ -168,10 +168,15 @@ export function generateResponse(command: ParsedCommand, context: {
   switch (command.type) {
     case "create_run": {
       const r = context.createdRun;
-      if (r) {
-        return `🧠 CEOが計画を立案中...\n\nRun: ${r.title}\nスコア: ${r.score}点\nステータス: ${r.status === "awaiting_approval" ? "承認待ち" : "思考中"}\n\n${r.status === "awaiting_approval" ? "→ 🔄 Runs タブで計画を確認・承認してください" : "→ 思考ループ継続中"}`;
+      if (!r) return "🧠 計画を立案しています...";
+      if (r.status === "executing" || r.status === "done") {
+        const tc = (context as Record<string, unknown>).tasksCreated as number | undefined;
+        return `✅ 計画を承認・実行しました\n\nRun: ${r.title}\nスコア: ${r.score}点\n生成タスク: ${tc || "?"}件\n\n→ Tasksタブで進捗を確認できます`;
       }
-      return "🧠 計画を立案しています...";
+      if (r.status === "awaiting_approval") {
+        return `🧠 計画が完成しました（${r.score}点）\n\nRun: ${r.title}\n→ Homeの承認ボタンから実行してください`;
+      }
+      return `🧠 CEOが計画を立案中...\n\nRun: ${r.title}\nスコア: ${r.score}点\n→ 思考ループ継続中（最大3回自動ループ）`;
     }
 
     case "improve_run": {

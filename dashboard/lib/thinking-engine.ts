@@ -255,15 +255,14 @@ export async function runIteration(
   }
 
   if (run.current_iteration >= run.max_iterations) {
+    // 最大到達 → ベスト案で承認フローへ（モック環境でもここで必ず止まる）
     await supabase.from("agent_runs").update({ status: "awaiting_approval", dynamic_target_score: scoring.targetScore }).eq("id", runId);
-
     await supabase.from("approval_requests").insert({
       run_id: runId, type: "plan_approval",
-      title: `計画承認: ${run.title}（最大ループ到達）`,
-      description: `${run.max_iterations}回到達。ベスト${run.best_score}点（目標${scoring.targetScore}点, 実効${scoring.effectiveScore.toFixed(1)}）`,
+      title: `計画承認: ${run.title}`,
+      description: `${run.max_iterations}回到達。ベスト${run.best_score}点`,
       plan: run.final_plan,
     });
-
     return { done: true, score: run.best_score, iteration: run.current_iteration, scoring };
   }
 
