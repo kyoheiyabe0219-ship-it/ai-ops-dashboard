@@ -168,11 +168,14 @@ export default function HomeTab({
       {/* ヒーロー: 収益 + 成長 + 予測      */}
       {/* =============================== */}
       {(() => {
-        // 成長率（仮: activeStreams数ベース推定）
         const growthRate = rev.activeStreams > 1 ? Math.round(rev.avgRoi * 1.4) : 0;
         const growthAmount = Math.round(rev.monthly * growthRate / 100);
         const predicted = rev.monthly + growthAmount;
-        const isGrowing = growthRate > 0;
+        const isGrowing = growthRate > 5;
+        const isDecline = growthRate < -5;
+        const statusEmoji = isGrowing ? "🔥" : isDecline ? "⚠️" : "⚖️";
+        const statusLabel = isGrowing ? "成長中" : isDecline ? "悪化中" : rev.monthly > 0 ? "停滞中" : "開始前";
+        const statusColor = isGrowing ? "text-green-400" : isDecline ? "text-red-400" : "text-yellow-400";
 
         // AIコメント生成
         let aiComment = "";
@@ -203,7 +206,12 @@ export default function HomeTab({
                 )}
               </div>
 
-              <p className="text-[10px] text-purple-400/60 mb-3">累計 {formatYen(rev.total)} • 平均ROI {rev.avgRoi}x</p>
+              <div className="flex items-center gap-2 mb-3">
+                <p className="text-[10px] text-purple-400/60">累計 {formatYen(rev.total)} • 平均ROI {rev.avgRoi}x</p>
+                <span className={`text-[10px] font-bold px-2 py-0.5 rounded-full ${isGrowing ? "bg-green-900/50 text-green-400" : isDecline ? "bg-red-900/50 text-red-400" : "bg-yellow-900/40 text-yellow-400"}`}>
+                  {statusEmoji} {statusLabel}
+                </span>
+              </div>
 
               {/* 4指標 */}
               <div className="grid grid-cols-4 gap-2 text-center">
@@ -254,10 +262,42 @@ export default function HomeTab({
       })()}
 
       {/* =============================== */}
-      {/* 推奨アクション（変更①②⑤）       */}
+      {/* ワンタップ行動（追加①）           */}
+      {/* =============================== */}
+      <div className="grid grid-cols-3 gap-2">
+        {rev.avgRoi > 3 && (
+          <button onClick={() => { setChatInput("成功パターンを横展開して"); }}
+            className="bg-green-900/40 hover:bg-green-900/60 border border-green-700/40 rounded-xl py-3 text-center transition">
+            <p className="text-lg">🚀</p>
+            <p className="text-[10px] font-bold text-green-400">拡大する</p>
+          </button>
+        )}
+        {!rev.avgRoi || rev.avgRoi <= 3 ? (
+          <button onClick={() => { setChatInput("新しい収益戦略をテストして"); }}
+            className="bg-purple-900/40 hover:bg-purple-900/60 border border-purple-700/40 rounded-xl py-3 text-center transition">
+            <p className="text-lg">🧪</p>
+            <p className="text-[10px] font-bold text-purple-400">テストする</p>
+          </button>
+        ) : (
+          <button onClick={() => { setChatInput("新しい収益源を開拓して"); }}
+            className="bg-purple-900/40 hover:bg-purple-900/60 border border-purple-700/40 rounded-xl py-3 text-center transition">
+            <p className="text-lg">🧪</p>
+            <p className="text-[10px] font-bold text-purple-400">テストする</p>
+          </button>
+        )}
+        <button onClick={() => { setChatInput("低ROIの戦略を停止して"); }}
+          className="bg-gray-900 hover:bg-gray-800 border border-gray-700/40 rounded-xl py-3 text-center transition">
+          <p className="text-lg">🛑</p>
+          <p className="text-[10px] font-bold text-gray-500">停止する</p>
+        </button>
+      </div>
+
+      {/* =============================== */}
+      {/* 次の一手（追加②: 3択強制提示）    */}
       {/* =============================== */}
       {actions.length > 0 && (
         <div className="space-y-2">
+          <p className="text-xs font-bold text-purple-400">次の一手</p>
           {actions.map((action, i) => {
             const style = rankStyle[action.rank];
             return (
